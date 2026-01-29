@@ -1,0 +1,6 @@
+[submodule "IndexedDB"]
+	path = IndexedDB
+	url = git@github.com:w3c/IndexedDB.git
+[submodule "wpt"]
+	path = wpt
+	url = git@github.com:web-platform-tests/wpt.git
