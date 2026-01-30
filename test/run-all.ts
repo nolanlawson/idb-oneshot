@@ -63,11 +63,15 @@ async function main() {
     totalFail = 0,
     totalTimeout = 0,
     totalNotrun = 0;
+  let filesErrored = 0;
   for (const r of results) {
     totalPass += r.pass;
     totalFail += r.fail;
     totalTimeout += r.timeout;
     totalNotrun += r.notrun;
+    if (r.status === 'error' || (r.status === 'timeout' && r.subtests.length === 0)) {
+      filesErrored++;
+    }
   }
   const total = totalPass + totalFail + totalTimeout + totalNotrun;
   const passRate = total > 0 ? ((totalPass / total) * 100).toFixed(1) : '0.0';
@@ -75,7 +79,7 @@ async function main() {
   console.log('\n=== Summary ===');
   console.log(`Total subtests: ${total}`);
   console.log(`Pass: ${totalPass}, Fail: ${totalFail}, Timeout: ${totalTimeout}, Not Run: ${totalNotrun}`);
-  console.log(`Pass rate: ${passRate}%`);
+  console.log(`Pass rate: ${passRate}% (${filesErrored} file(s) crashed and are excluded from this count)`);
 
   // Generate manifest
   const manifest: any = {
@@ -86,6 +90,7 @@ async function main() {
       fail: totalFail,
       timeout: totalTimeout,
       notrun: totalNotrun,
+      files_errored: filesErrored,
       pass_rate: passRate + '%',
     },
     files: {} as any,
