@@ -7,27 +7,16 @@ import { IDBKeyRange } from './IDBKeyRange.ts';
 import { IDBRecord } from './IDBRecord.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { encodeKey, valueToKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
+import { serialize, deserialize, cloneValue } from './structured-clone.ts';
+import {
+  isValidKeyPath, isValidKeyPathString,
+  extractKeyFromValue, evaluateKeyPath, evaluateKeyPathDetailed,
+  evaluateKeyPathRaw, KEY_NOT_VALID,
+  injectKeyIntoValue, canInjectKey,
+} from './keypath.ts';
 import type { IDBValidKey } from './types.ts';
 
-/**
- * Validate a key path string per the spec.
- */
-function isValidKeyPathString(keyPath: string): boolean {
-  if (keyPath === '') return true;
-  const parts = keyPath.split('.');
-  const identRegex = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
-  return parts.every(p => identRegex.test(p));
-}
-
-export function isValidKeyPath(keyPath: string | string[] | null): boolean {
-  if (keyPath === null) return true;
-  if (Array.isArray(keyPath)) {
-    if (keyPath.length === 0) return false;
-    return keyPath.every(p => typeof p === 'string' && isValidKeyPathString(p));
-  }
-  if (typeof keyPath !== 'string') return false;
-  return isValidKeyPathString(keyPath);
-}
+export { isValidKeyPath } from './keypath.ts';
 
 /**
  * Validate a count parameter per WebIDL [EnforceRange] for unsigned long.
@@ -271,7 +260,26 @@ export class IDBObjectStore {
       throw new DOMException('The transaction is read-only.', 'ReadOnlyError');
     }
 
-    // Key extraction and validation happens synchronously (throws on error)
+    // Per spec: clone the value using structured clone BEFORE key path evaluation.
+    // The transaction should be temporarily inactive during cloning.
+    const savedState = this._transaction._state;
+    this._transaction._state = 'inactive_clone';
+    let clonedValue: any;
+    let serializedValue: Buffer;
+    try {
+      // Use structuredClone() for the clone (triggers getters, handles circular refs)
+      clonedValue = cloneValue(value);
+      // Serialize the cloned value for storage
+      serializedValue = serialize(clonedValue) as Buffer;
+    } catch (e: any) {
+      this._transaction._state = savedState;
+      // Re-throw any error: DataCloneError for non-cloneable types,
+      // or the original error from enumerable getters during clone
+      throw e;
+    }
+    this._transaction._state = savedState;
+
+    // Key extraction and validation happens on the CLONE (per spec)
     let effectiveKey: IDBValidKey;
 
     if (this._keyPath !== null) {
@@ -281,12 +289,28 @@ export class IDBObjectStore {
           'DataError'
         );
       }
-      const extracted = this._extractKeyFromValue(value, this._keyPath);
+      // Use detailed evaluation to distinguish "not found" from "found but not a valid key"
+      const keyPathStr = typeof this._keyPath === 'string' ? this._keyPath : null;
+      const extracted = extractKeyFromValue(clonedValue, this._keyPath);
+      // Check if any sub-path resolved to a non-key value
+      const hasInvalidKey = keyPathStr !== null
+        ? evaluateKeyPathDetailed(clonedValue, keyPathStr) === KEY_NOT_VALID
+        : (Array.isArray(this._keyPath) && this._keyPath.some(p => evaluateKeyPathDetailed(clonedValue, p) === KEY_NOT_VALID));
+      if (hasInvalidKey) {
+        // Key path resolved but value is not a valid key — always DataError
+        throw new DOMException('The key is not a valid key.', 'DataError');
+      }
       if (extracted !== null) {
         effectiveKey = extracted;
       } else if (this._autoIncrement) {
-        // Defer key generation to operation time
-        effectiveKey = null as any; // placeholder
+        // Check that key can be injected before deferring generation
+        if (!canInjectKey(clonedValue, this._keyPath as string)) {
+          throw new DOMException(
+            'A key could not be injected into the value.',
+            'DataError'
+          );
+        }
+        effectiveKey = null as any; // placeholder — generated at operation time
       } else {
         throw new DOMException('No key could be extracted from the value', 'DataError');
       }
@@ -313,11 +337,22 @@ export class IDBObjectStore {
 
         // Handle auto-increment key generation at operation time
         if (effectiveKey === null && autoIncrement) {
+          const nextKey = store._nextKey();
+          if (nextKey === null) {
+            // Key generator overflow
+            request._readyState = 'done';
+            request._error = new DOMException(
+              'Key generator has reached its maximum value',
+              'ConstraintError'
+            );
+            request._constraintError = true;
+            return;
+          }
+          effectiveKey = nextKey;
           if (keyPathForAutoInc !== null) {
-            effectiveKey = store._nextKey();
-            value = store._injectKeyIntoValue(value, keyPathForAutoInc, effectiveKey);
-          } else {
-            effectiveKey = store._nextKey();
+            // Inject into the clone and re-serialize
+            injectKeyIntoValue(clonedValue, keyPathForAutoInc, effectiveKey);
+            serializedValue = serialize(clonedValue) as Buffer;
           }
         }
 
@@ -327,7 +362,6 @@ export class IDBObjectStore {
         }
 
         const encodedKey = encodeKey(effectiveKey);
-        const serializedValue = Buffer.from(JSON.stringify(value));
 
         // Check for unique index constraints
         const indexes = store._transaction._db._backend.getIndexesForStore(
@@ -337,7 +371,7 @@ export class IDBObjectStore {
 
         for (const idx of indexes) {
           if (!idx.unique) continue;
-          const indexKeyValue = store._extractKeyFromValue(value, idx.keyPath);
+          const indexKeyValue = extractKeyFromValue(clonedValue, idx.keyPath);
           if (indexKeyValue === null) continue;
           const encodedIndexKey = encodeKey(indexKeyValue);
           const excludeKey = noOverwrite ? undefined : encodedKey;
@@ -392,8 +426,8 @@ export class IDBObjectStore {
           serializedValue
         );
 
-        // Add index entries
-        store._addIndexEntries(indexes, value, encodedKey);
+        // Add index entries using cloned value
+        store._addIndexEntries(indexes, clonedValue, encodedKey);
 
         request._readyState = 'done';
         request._result = effectiveKey;
@@ -438,7 +472,7 @@ export class IDBObjectStore {
             storeId,
             range.exact
           );
-          resultValue = raw ? JSON.parse(raw.toString()) : undefined;
+          resultValue = raw ? deserialize(raw) : undefined;
         } else {
           const record = store._transaction._db._backend.getRecordInRange(
             store._transaction._db._name,
@@ -448,7 +482,7 @@ export class IDBObjectStore {
             range.lowerOpen,
             range.upperOpen
           );
-          resultValue = record ? JSON.parse(record.value.toString()) : undefined;
+          resultValue = record ? deserialize(record.value) : undefined;
         }
         request._readyState = 'done';
         request._result = resultValue;
@@ -673,6 +707,13 @@ export class IDBObjectStore {
     }
     this._ensureValid();
 
+    // Per WebIDL: stringify keyPath elements if it's an array
+    if (Array.isArray(keyPath)) {
+      keyPath = keyPath.map(String);
+    } else if (typeof keyPath !== 'string') {
+      keyPath = String(keyPath);
+    }
+
     // Check for duplicate index name (before keyPath validation per spec exception ordering)
     const existingNames = this._transaction._db._backend.getIndexNames(
       this._transaction._db._name,
@@ -855,7 +896,7 @@ export class IDBObjectStore {
         );
         const results: any[] = [];
         for (const row of rows) {
-          results.push(JSON.parse(row.value.toString()));
+          results.push(deserialize(row.value));
         }
         request._readyState = 'done';
         request._result = results;
@@ -939,7 +980,7 @@ export class IDBObjectStore {
         const results: any[] = [];
         for (const row of rows) {
           const key = decodeKey(row.key);
-          const value = JSON.parse(row.value.toString());
+          const value = deserialize(row.value);
           results.push(new IDBRecord(key, key, value));
         }
         request._readyState = 'done';
@@ -972,12 +1013,23 @@ export class IDBObjectStore {
     }
   }
 
-  _nextKey(): number {
+  // Exposed for external modules (e.g., keypath.ts)
+  static _extractKeyFromValueStatic = extractKeyFromValue;
+
+  // Maximum key generator value per spec (2^53)
+  static readonly MAX_KEY_GENERATOR_VALUE = 9007199254740992; // 2^53
+
+  _nextKey(): number | null {
     const meta = this._transaction._db._backend.getObjectStoreMetadata(
       this._transaction._db._name,
       this._name
     );
-    const next = (meta?.currentKey ?? 0) + 1;
+    const currentKey = meta?.currentKey ?? 0;
+    // Per spec: if current number is greater than or equal to 2^53, return failure
+    if (currentKey >= IDBObjectStore.MAX_KEY_GENERATOR_VALUE) {
+      return null;
+    }
+    const next = currentKey + 1;
     this._transaction._db._backend.updateCurrentKey(
       this._transaction._db._name,
       this._storeId,
@@ -988,6 +1040,20 @@ export class IDBObjectStore {
 
   private _maybeUpdateKeyGenerator(key: number): void {
     if (!this._autoIncrement) return;
+    // Per spec: if key is NaN, do nothing
+    if (Number.isNaN(key)) return;
+    // Infinity and -Infinity are handled: Infinity should max out the generator,
+    // -Infinity is < 1 so it does nothing.
+    if (key === Infinity) {
+      // Max out the key generator — future generation will fail
+      this._transaction._db._backend.updateCurrentKey(
+        this._transaction._db._name,
+        this._storeId,
+        IDBObjectStore.MAX_KEY_GENERATOR_VALUE
+      );
+      return;
+    }
+    if (!Number.isFinite(key)) return; // -Infinity
     const floorKey = Math.floor(key);
     if (floorKey < 1) return;
     const meta = this._transaction._db._backend.getObjectStoreMetadata(
@@ -995,71 +1061,27 @@ export class IDBObjectStore {
       this._name
     );
     if (meta && floorKey >= meta.currentKey) {
+      // Cap at 2^53 — any value >= 2^53 will cause future generation to fail
+      const newKey = Math.min(floorKey, IDBObjectStore.MAX_KEY_GENERATOR_VALUE);
       this._transaction._db._backend.updateCurrentKey(
         this._transaction._db._name,
         this._storeId,
-        floorKey
+        newKey
       );
     }
   }
 
+  // Delegate to keypath.ts module
   _extractKeyFromValue(value: any, keyPath: string | string[]): IDBValidKey | null {
-    if (typeof keyPath === 'string') {
-      return this._evaluateKeyPath(value, keyPath);
-    }
-    const result: IDBValidKey[] = [];
-    for (const path of keyPath as string[]) {
-      const key = this._evaluateKeyPath(value, path);
-      if (key === null) return null;
-      result.push(key);
-    }
-    return result;
+    return extractKeyFromValue(value, keyPath);
   }
 
-  private _evaluateKeyPath(value: any, keyPath: string): IDBValidKey | null {
-    if (keyPath === '') return valueToKey(value);
-    const parts = keyPath.split('.');
-    let current = value;
-    for (const part of parts) {
-      if (current === null || current === undefined || typeof current !== 'object') {
-        return null;
-      }
-      current = current[part];
-    }
-    return valueToKey(current);
-  }
-
-  /** Extract the raw value at a key path without validating as a key.
-   *  Used for multi-entry index extraction where the value may be an array
-   *  containing non-key elements. */
   private _evaluateKeyPathRaw(value: any, keyPath: string): any {
-    if (keyPath === '') return value;
-    const parts = keyPath.split('.');
-    let current = value;
-    for (const part of parts) {
-      if (current === null || current === undefined || typeof current !== 'object') {
-        return undefined;
-      }
-      current = current[part];
-    }
-    return current;
+    return evaluateKeyPathRaw(value, keyPath);
   }
 
   _injectKeyIntoValue(value: any, keyPath: string | string[], key: IDBValidKey): any {
-    if (typeof keyPath === 'string') {
-      const clone = typeof value === 'object' && value !== null ? { ...value } : value;
-      const parts = keyPath.split('.');
-      let current = clone;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!(parts[i] in current)) {
-          current[parts[i]] = {};
-        }
-        current = current[parts[i]];
-      }
-      current[parts[parts.length - 1]] = key;
-      return clone;
-    }
-    return value;
+    return injectKeyIntoValue(value, keyPath, key);
   }
 
   /** Add index entries for a record */
@@ -1116,7 +1138,7 @@ export class IDBObjectStore {
     ).all(this._storeId) as Array<{ key: Buffer; value: Buffer }>;
 
     for (const row of rows) {
-      const value = JSON.parse(row.value.toString());
+      const value = deserialize(row.value);
 
       if (multiEntry && typeof keyPath === 'string') {
         const rawValue = this._evaluateKeyPathRaw(value, keyPath);

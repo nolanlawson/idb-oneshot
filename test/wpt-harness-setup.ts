@@ -47,6 +47,38 @@ export function setupGlobals(testFile: string): void {
   // Ensure `document` is not present (Node doesn't have it, but be safe)
   delete (globalThis as any).document;
 
+  // Stub browser-only geometry and image types so tests can at least load
+  // (individual subtests for these types will fail gracefully)
+  const geometryTypes = ['DOMMatrix', 'DOMMatrixReadOnly', 'DOMPoint', 'DOMPointReadOnly', 'DOMRect', 'DOMRectReadOnly'];
+  for (const name of geometryTypes) {
+    if (!(globalThis as any)[name]) {
+      (globalThis as any)[name] = class {
+        constructor(...args: any[]) {
+          // Minimal stub — properties won't match spec but prevents ReferenceError
+        }
+      };
+      Object.defineProperty((globalThis as any)[name], 'name', { value: name });
+    }
+  }
+  if (!(globalThis as any).ImageData) {
+    (globalThis as any).ImageData = class ImageData {
+      width: number;
+      height: number;
+      data: Uint8ClampedArray;
+      constructor(widthOrData: number | Uint8ClampedArray, height?: number) {
+        if (typeof widthOrData === 'number') {
+          this.width = widthOrData;
+          this.height = height!;
+          this.data = new Uint8ClampedArray(this.width * this.height * 4);
+        } else {
+          this.data = widthOrData;
+          this.height = height!;
+          this.width = this.data.length / (4 * this.height);
+        }
+      }
+    };
+  }
+
   // Provide addEventListener/removeEventListener/dispatchEvent on globalThis
   // so testharness.js can listen for 'load' event to trigger async tests
   if (typeof (globalThis as any).addEventListener !== 'function') {

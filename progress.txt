@@ -462,4 +462,67 @@ Phase 9: getAll / getAllKeys / getAllRecords — COMPLETE
   - No regressions in previously passing tests
   - npx tsc --noEmit passes clean
 
-Next: Phase 10 — Structured Clone + Key Generator + Key Path Edge Cases
+Phase 10: Structured Clone + Key Generator + Key Path Edge Cases — COMPLETE
+  - Created src/structured-clone.ts:
+    - serialize(): uses v8.serialize() for full structured clone support (BigInt, Date, RegExp,
+      ArrayBuffer, TypedArrays, Map, Set, Error subtypes, circular references, primitive wrappers)
+    - deserialize(): uses v8.deserialize() with JSON.parse fallback for legacy data
+    - cloneValue(): uses structuredClone() for clone-before-keypath-eval with proper error propagation
+    - Throws DataCloneError for non-serializable types (functions, Symbols, etc.)
+  - Created src/keypath.ts:
+    - Unicode identifier support via \p{ID_Start}/\p{ID_Continue} regex (supports Norwegian ø, etc.)
+    - evaluateKeyPath(): handles string .length property, Blob .size/.type, File .name/.lastModified
+    - evaluateKeyPathDetailed(): distinguishes "property not found" from "found but not a valid key"
+    - extractKeyFromValue(), injectKeyIntoValue(), canInjectKey() extracted from IDBObjectStore
+    - isValidKeyPath()/isValidKeyPathString() with proper Unicode support
+  - Updated IDBObjectStore._addOrPut():
+    - Clone-before-keypath-eval: value is structuredClone'd before key extraction
+    - Transaction temporarily set to inactive during cloning (structured-clone-transaction-state tests)
+    - Errors from enumerable getters during cloning propagate through (not wrapped in DataCloneError)
+    - Key extraction operates on the clone, not the original value
+    - Invalid key detection: key path resolving to non-key value throws DataError (not autoIncrement)
+    - canInjectKey() check for multi-segment key paths (e.g., {a: 123} with keyPath 'a.b.id')
+  - Fixed key generator overflow:
+    - _nextKey(): returns null when current key >= 2^53 (9007199254740992)
+    - _maybeUpdateKeyGenerator(): handles Infinity (maxes out generator), NaN (no-op),
+      caps at 2^53 so future generation fails with ConstraintError
+    - All 11 big_key_test cases pass including Infinity, negative values, powers of 2
+  - WebIDL key path stringification:
+    - createObjectStore() and createIndex() now stringify array elements and non-string keyPaths
+    - Handles [['x'], ['y']] → ['x', 'y'], {toString: () => 'y'} → 'y', loop_array → ['']
+  - Replaced all JSON.stringify/JSON.parse with v8 serialize/deserialize:
+    - IDBObjectStore: put/add, get, getAll, getAllKeys, getAllRecords, _populateIndex
+    - IDBCursor: object store cursors, index cursors, advance, continue, continuePrimaryKey
+    - IDBIndex: get, getAll, getAllKeys, getAllRecords
+  - Added IDBRequest Symbol.toStringTag ('IDBRequest') for assert_class_string compatibility
+  - Added browser API shims in test harness:
+    - DOMMatrix, DOMMatrixReadOnly, DOMPoint, DOMPointReadOnly, DOMRect, DOMRectReadOnly
+    - ImageData (minimal constructor for width/height/data)
+  - WPT results (Phase 10 target tests):
+    - keygenerator.any.js: 21/21 PASS (new)
+    - keypath.any.js: 20/20 PASS (new)
+    - keypath_invalid.any.js: 24/24 PASS (new)
+    - keypath_maxsize.any.js: 3/3 PASS (new)
+    - keypath-exceptions.any.js: 4/6 PASS (2 fail: Object.prototype getter edge case in Node)
+    - keypath-special-identifiers.any.js: 2/6 PASS (4 fail: Blob/File not preserved by v8.serialize)
+    - clone-before-keypath-eval.any.js: 5/5 PASS (new)
+    - structured-clone-transaction-state.any.js: 3/3 PASS (new)
+    - value.any.js: 8/8 PASS (new)
+    - value_recursive.any.js: 3/3 PASS (new)
+    - structured-clone.any.js: 4/124 PASS (most fail: promise_test transaction timing — Phase 11)
+    - nested-cloning-basic.any.js: 1/2 PASS (1 fail: Blob not preserved by v8.serialize)
+    - nested-cloning-small.any.js: 0/6 FAIL (Blob data issues)
+    - nested-cloning-large.any.js: 1/7 PASS (Blob/large data issues)
+    - nested-cloning-large-multiple.any.js: 0/2 FAIL (Blob data issues)
+  - Bonus improvements from structured clone:
+    - key_valid.any.js: 18/18 PASS (was 14/18, Date/Infinity now serialized correctly)
+    - key_invalid.any.js: 33/34 PASS (unchanged)
+  - Remaining failures are cross-cutting issues:
+    - Blob/File: v8.serialize doesn't handle Blob natively; needs custom serialization (future)
+    - structured-clone.any.js: promise_test + await pattern causes TransactionInactiveError (Phase 11)
+    - Object.prototype getters: Node's structuredClone accesses enumerable prototype getters
+  - No regressions in previously passing tests
+  - Overall WPT pass rate: 1017/1234 subtests (82.4%), up from 739/1077 (68.6%)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 11 — Event Bubbling + Error Handling

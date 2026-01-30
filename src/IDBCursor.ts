@@ -2,6 +2,7 @@
 
 import { IDBKeyRange } from './IDBKeyRange.ts';
 import { encodeKey, compareKeys, valueToKey, decodeKey } from './keys.ts';
+import { deserialize } from './structured-clone.ts';
 // queueTask not imported directly; we use transaction._queueRequestCallback
 import type { IDBValidKey } from './types.ts';
 
@@ -389,7 +390,7 @@ export class IDBCursor {
       this._key = decodeKeyFromBuffer(found.key);
       this._primaryKey = this._key;
       if (!this._state.keyOnly) {
-        this._value = JSON.parse(found.value.toString());
+        this._value = deserialize(found.value);
       }
     } else {
       this._key = undefined;
@@ -457,7 +458,7 @@ export class IDBCursor {
       this._key = decodeKeyFromBuffer(found.index_key);
       this._primaryKey = decodeKeyFromBuffer(found.primary_key);
       if (!this._state.keyOnly) {
-        this._value = JSON.parse(found.value.toString());
+        this._value = deserialize(found.value);
       }
     } else {
       this._key = undefined;
@@ -500,7 +501,7 @@ export class IDBCursor {
         this._key = decodeKeyFromBuffer(found.key);
         this._primaryKey = this._key;
         if (!this._state.keyOnly) {
-          this._value = JSON.parse(found.value.toString());
+          this._value = deserialize(found.value);
         }
       } else {
         this._key = undefined;
@@ -564,7 +565,7 @@ export class IDBCursor {
         this._key = decodeKeyFromBuffer(found.index_key);
         this._primaryKey = decodeKeyFromBuffer(found.primary_key);
         if (!this._state.keyOnly) {
-          this._value = JSON.parse(found.value.toString());
+          this._value = deserialize(found.value);
         }
       } else {
         this._key = undefined;
@@ -607,7 +608,7 @@ export class IDBCursor {
       this._key = decodeKeyFromBuffer(found.index_key);
       this._primaryKey = decodeKeyFromBuffer(found.primary_key);
       if (!this._state.keyOnly) {
-        this._value = JSON.parse(found.value.toString());
+        this._value = deserialize(found.value);
       }
     } else {
       this._key = undefined;
@@ -697,7 +698,7 @@ export function openObjectStoreCursor(
         cursor._key = decodeKeyFromBuffer(first.key);
         cursor._primaryKey = cursor._key;
         if (!keyOnly) {
-          cursor._value = JSON.parse(first.value.toString());
+          cursor._value = deserialize(first.value);
         }
         cursor._gotValue = true;
 
@@ -793,7 +794,7 @@ export function openIndexCursor(
         cursor._key = decodeKeyFromBuffer(first.index_key);
         cursor._primaryKey = decodeKeyFromBuffer(first.primary_key);
         if (!keyOnly) {
-          cursor._value = JSON.parse(first.value.toString());
+          cursor._value = deserialize(first.value);
         }
         cursor._gotValue = true;
 

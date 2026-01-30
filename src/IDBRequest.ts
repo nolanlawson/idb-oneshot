@@ -3,6 +3,8 @@
 import { initEventTarget, idbDispatchEvent } from './scheduling.ts';
 
 export class IDBRequest extends EventTarget {
+  get [Symbol.toStringTag]() { return 'IDBRequest'; }
+
   _result: any = undefined;
   _error: DOMException | null = null;
   _readyState: 'pending' | 'done' = 'pending';

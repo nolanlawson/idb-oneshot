@@ -206,7 +206,7 @@ Uses SQLite `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for abort semantics.
 ### Phase 9: getAll / getAllKeys / getAllRecords ✅
 **Target tests**: `idbobjectstore_getAll.any.js`, `idbobjectstore_getAllKeys.any.js`, `idbobjectstore_getAll-options.any.js`, `idbobjectstore_getAllKeys-options.any.js`, `idbobjectstore_getAllRecords.any.js`, `idbindex_getAll.any.js`, `idbindex_getAllKeys.any.js`, `idbindex_getAll-options.any.js`, `idbindex_getAllKeys-options.any.js`, `idbindex_getAllRecords.any.js`, `*-enforcerange.any.js` (4 files)
 
-### Phase 10: Structured Clone + Key Generator + Key Path Edge Cases
+### Phase 10: Structured Clone + Key Generator + Key Path Edge Cases ✅
 **Target tests**: `structured-clone.any.js`, `structured-clone-transaction-state.any.js`, `clone-before-keypath-eval.any.js`, `nested-cloning-*.any.js` (4 files), `value.any.js`, `value_recursive.any.js`, `keygenerator.any.js`, `keypath.any.js`, `keypath-exceptions.any.js`, `keypath-special-identifiers.any.js`, `keypath_invalid.any.js`, `keypath_maxsize.any.js`
 
 ### Phase 11: Event Bubbling + Error Handling

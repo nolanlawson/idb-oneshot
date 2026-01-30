@@ -91,8 +91,15 @@ export class IDBDatabase extends EventTarget {
       );
     }
 
-    const keyPath = options?.keyPath !== undefined ? options.keyPath : null;
+    let keyPath = options?.keyPath !== undefined ? options.keyPath : null;
     const autoIncrement = options?.autoIncrement ?? false;
+
+    // Per WebIDL: stringify keyPath elements if it's an array (sequence<DOMString>)
+    if (Array.isArray(keyPath)) {
+      keyPath = keyPath.map(String);
+    } else if (keyPath !== null && keyPath !== undefined && typeof keyPath !== 'string') {
+      keyPath = String(keyPath);
+    }
 
     // 3. SyntaxError for invalid key path (before ConstraintError per spec)
     if (keyPath !== null && keyPath !== undefined && !isValidKeyPath(keyPath)) {

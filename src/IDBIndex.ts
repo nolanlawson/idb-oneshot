@@ -5,6 +5,7 @@ import { IDBKeyRange } from './IDBKeyRange.ts';
 import { IDBRecord } from './IDBRecord.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { encodeKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
+import { deserialize } from './structured-clone.ts';
 import type { IDBValidKey } from './types.ts';
 
 const decodeKeyFromBuffer = decodeKey;
@@ -276,13 +277,13 @@ export class IDBIndex {
           const record = idx._backend.getRecordByIndexKey(
             idx._dbName, idx._indexId, range.exact
           );
-          resultValue = record ? JSON.parse(record.value.toString()) : undefined;
+          resultValue = record ? deserialize(record.value) : undefined;
         } else {
           const record = idx._backend.getRecordByIndexRange(
             idx._dbName, idx._indexId,
             range.lower, range.upper, range.lowerOpen, range.upperOpen
           );
-          resultValue = record ? JSON.parse(record.value.toString()) : undefined;
+          resultValue = record ? deserialize(record.value) : undefined;
         }
         request._readyState = 'done';
         request._result = resultValue;
@@ -438,7 +439,7 @@ export class IDBIndex {
         }
         const limit = (parsed.count !== undefined && parsed.count > 0) ? parsed.count : filteredRows.length;
         for (let i = 0; i < Math.min(limit, filteredRows.length); i++) {
-          results.push(JSON.parse(filteredRows[i].value.toString()));
+          results.push(deserialize(filteredRows[i].value));
         }
         request._readyState = 'done';
         request._result = results;
@@ -553,7 +554,7 @@ export class IDBIndex {
           const row = filteredRows[i];
           const key = decodeKeyFromBuffer(row.index_key);
           const primaryKey = decodeKeyFromBuffer(row.primary_key);
-          const value = JSON.parse(row.value.toString());
+          const value = deserialize(row.value);
           results.push(new IDBRecord(key, primaryKey, value));
         }
         request._readyState = 'done';
