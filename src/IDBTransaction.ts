@@ -3,6 +3,7 @@
 import { DOMStringList } from './DOMStringList.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { queueTask } from './scheduling.ts';
+import { getScheduler } from './transaction-scheduler.ts';
 
 // Factory function to create IDBObjectStore without circular import
 // Set by IDBObjectStore module
@@ -26,6 +27,12 @@ export class IDBTransaction extends EventTarget {
   _savepointStarted: boolean = false;
   _objectStoreCache: Map<string, any> = new Map(); // SameObject cache
 
+  // Transaction scheduling
+  _started: boolean = false; // Whether the scheduler has given permission to run
+  _pendingCallbacks: Array<() => void> = []; // Buffered request event callbacks
+  _useScheduler: boolean = false; // Whether this transaction uses the scheduler
+  _commitOnStart: boolean = false; // Auto-commit when scheduler starts (empty transactions)
+
   // Event handlers
   onabort: ((this: IDBTransaction, ev: Event) => any) | null = null;
   oncomplete: ((this: IDBTransaction, ev: Event) => any) | null = null;
@@ -39,6 +46,10 @@ export class IDBTransaction extends EventTarget {
     const result = super.dispatchEvent(event);
     if (typeof handler === 'function') {
       this.removeEventListener(event.type, handler);
+    }
+    // Bubble to the database if the event bubbles and wasn't stopped
+    if (event.bubbles && !event.cancelBubble && this._db) {
+      this._db.dispatchEvent(event);
     }
     return result;
   }
@@ -124,14 +135,25 @@ export class IDBTransaction extends EventTarget {
       }
     }
 
+    // Clear any pending callbacks
+    this._pendingCallbacks = [];
+
     // Fire abort event
     queueTask(() => {
       const abortEvent = new Event('abort', { bubbles: true, cancelable: false });
       this.dispatchEvent(abortEvent);
 
+      // Notify scheduler
+      if (this._useScheduler) {
+        getScheduler(this._db._name).transactionFinished(this);
+      }
+
       // Notify database about abort for versionchange transactions
+      // Fire in a separate task so the abort event fully propagates first
       if (this._mode === 'versionchange') {
-        this._db._versionChangeTransactionFinished(true);
+        queueTask(() => {
+          this._db._versionChangeTransactionFinished(true);
+        });
       }
     });
   }
@@ -171,6 +193,48 @@ export class IDBTransaction extends EventTarget {
     return request;
   }
 
+  /** Queue a request event callback, respecting scheduler */
+  _queueRequestCallback(callback: () => void): void {
+    if (this._useScheduler && !this._started) {
+      // Buffer until scheduler starts us
+      this._pendingCallbacks.push(() => queueTask(callback));
+    } else {
+      queueTask(callback);
+    }
+  }
+
+  /** Queue a full request: operation (SQLite work) + event dispatch.
+   *  Both are deferred if the transaction hasn't been started by the scheduler.
+   */
+  _queueOperation(operation: () => void, eventCallback: () => void): void {
+    if (this._useScheduler && !this._started) {
+      this._pendingCallbacks.push(() => {
+        operation();
+        queueTask(eventCallback);
+      });
+    } else {
+      operation();
+      queueTask(eventCallback);
+    }
+  }
+
+  /** Called by scheduler when this transaction can start */
+  _schedulerStart(): void {
+    this._started = true;
+    // Flush any buffered callbacks - each one may queue further setTimeout tasks
+    for (const cb of this._pendingCallbacks) {
+      cb();
+    }
+    this._pendingCallbacks = [];
+
+    // If the transaction was marked for auto-commit (empty, already deactivated),
+    // commit now that the scheduler has given permission.
+    if (this._commitOnStart) {
+      this._commitOnStart = false;
+      this._maybeAutoCommit();
+    }
+  }
+
   /** Auto-commit when all requests are done and transaction becomes inactive */
   _commitWhenDone(): void {
     if (this._state === 'finished' || this._aborted) return;
@@ -197,6 +261,11 @@ export class IDBTransaction extends EventTarget {
       const completeEvent = new Event('complete');
       this.dispatchEvent(completeEvent);
 
+      // Notify scheduler
+      if (this._useScheduler) {
+        getScheduler(this._db._name).transactionFinished(this);
+      }
+
       // Notify database about completion for versionchange transactions
       if (this._mode === 'versionchange') {
         this._db._versionChangeTransactionFinished(false);
@@ -213,6 +282,11 @@ export class IDBTransaction extends EventTarget {
   /** Check if the transaction should auto-commit */
   _maybeAutoCommit(): void {
     if (this._state === 'inactive' && !this._aborted && this._pendingRequestCount <= 0) {
+      // If using scheduler and not yet started, defer commit until started
+      if (this._useScheduler && !this._started) {
+        this._commitOnStart = true;
+        return;
+      }
       this._state = 'committing';
       this._commitWhenDone();
     }

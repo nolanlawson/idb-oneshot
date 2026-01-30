@@ -190,8 +190,10 @@ Core async infrastructure: event dispatch timing, request lifecycle, version cha
 
 **Files**: `src/IDBCursor.ts`
 
-### Phase 6: Transaction Lifecycle + Scheduling
+### Phase 6: Transaction Lifecycle + Scheduling ✅
 **Target tests**: `idbtransaction.any.js`, `idbtransaction-oncomplete.any.js`, `idbtransaction_abort.any.js`, `idbtransaction_objectStoreNames.any.js`, `transaction-lifetime.any.js`, `transaction-lifetime-empty.any.js`, `transaction-deactivation-timing.any.js`, `transaction-requestqueue.any.js`, `transaction-create_in_versionchange.any.js`, `transaction-scheduling-*.any.js` (7 files), `writer-starvation.any.js`, `open-request-queue.any.js`, `delete-request-queue.any.js`
+
+**Files**: `src/transaction-scheduler.ts` (new), `src/IDBTransaction.ts`, `src/IDBDatabase.ts`, `src/IDBObjectStore.ts`, `src/IDBIndex.ts`, `src/IDBCursor.ts`, `src/IDBRequest.ts`
 
 ### Phase 7: Transaction Abort + Metadata Revert
 **Target tests**: `transaction-abort-generator-revert.any.js`, `transaction-abort-index-metadata-revert.any.js`, `transaction-abort-multiple-metadata-revert.any.js`, `transaction-abort-object-store-metadata-revert.any.js`, `transaction-abort-request-error.any.js`

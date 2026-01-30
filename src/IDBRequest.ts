@@ -6,6 +6,7 @@ export class IDBRequest extends EventTarget {
   _readyState: 'pending' | 'done' = 'pending';
   _source: any = null;
   _transaction: any = null;
+  _constraintError: boolean = false;
 
   get result(): any {
     if (this._readyState === 'pending') {
@@ -50,6 +51,10 @@ export class IDBRequest extends EventTarget {
     if (typeof handler === 'function') {
       this.removeEventListener(event.type, handler);
     }
+    // Bubble to the transaction if the event bubbles and wasn't stopped
+    if (event.bubbles && !event.cancelBubble && this._transaction) {
+      this._transaction.dispatchEvent(event);
+    }
     return result;
   }
 
@@ -59,6 +64,8 @@ export class IDBRequest extends EventTarget {
 }
 
 export class IDBOpenDBRequest extends IDBRequest {
+  get [Symbol.toStringTag]() { return 'IDBOpenDBRequest'; }
+
   onblocked: ((this: IDBOpenDBRequest, ev: Event) => any) | null = null;
   onupgradeneeded: ((this: IDBOpenDBRequest, ev: Event) => any) | null = null;
 }

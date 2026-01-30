@@ -4,7 +4,6 @@ import { openIndexCursor } from './IDBCursor.ts';
 import { IDBKeyRange } from './IDBKeyRange.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { encodeKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
-import { queueTask } from './scheduling.ts';
 import type { IDBValidKey } from './types.ts';
 
 const decodeKeyFromBuffer = decodeKey;
@@ -123,31 +122,34 @@ export class IDBIndex {
 
     const range = queryToRange(query);
     const request = this._transaction._createRequest(this);
+    const idx = this;
 
-    let resultValue: any;
-    if ('exact' in range) {
-      const record = this._backend.getRecordByIndexKey(
-        this._dbName, this._indexId, range.exact
-      );
-      resultValue = record ? JSON.parse(record.value.toString()) : undefined;
-    } else {
-      const record = this._backend.getRecordByIndexRange(
-        this._dbName, this._indexId,
-        range.lower, range.upper, range.lowerOpen, range.upperOpen
-      );
-      resultValue = record ? JSON.parse(record.value.toString()) : undefined;
-    }
-
-    request._readyState = 'done';
-    request._result = resultValue;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    this._transaction._queueOperation(
+      () => {
+        let resultValue: any;
+        if ('exact' in range) {
+          const record = idx._backend.getRecordByIndexKey(
+            idx._dbName, idx._indexId, range.exact
+          );
+          resultValue = record ? JSON.parse(record.value.toString()) : undefined;
+        } else {
+          const record = idx._backend.getRecordByIndexRange(
+            idx._dbName, idx._indexId,
+            range.lower, range.upper, range.lowerOpen, range.upperOpen
+          );
+          resultValue = record ? JSON.parse(record.value.toString()) : undefined;
+        }
+        request._readyState = 'done';
+        request._result = resultValue;
+      },
+      () => {
+        idx._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        idx._transaction._deactivate();
+        idx._transaction._requestFinished();
+      }
+    );
 
     return request;
   }
@@ -161,31 +163,34 @@ export class IDBIndex {
 
     const range = queryToRange(query);
     const request = this._transaction._createRequest(this);
+    const idx = this;
 
-    let resultKey: any;
-    if ('exact' in range) {
-      const record = this._backend.getRecordByIndexKey(
-        this._dbName, this._indexId, range.exact
-      );
-      resultKey = record ? decodeKeyFromBuffer(record.primaryKey) : undefined;
-    } else {
-      const record = this._backend.getRecordByIndexRange(
-        this._dbName, this._indexId,
-        range.lower, range.upper, range.lowerOpen, range.upperOpen
-      );
-      resultKey = record ? decodeKeyFromBuffer(record.primaryKey) : undefined;
-    }
-
-    request._readyState = 'done';
-    request._result = resultKey;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    this._transaction._queueOperation(
+      () => {
+        let resultKey: any;
+        if ('exact' in range) {
+          const record = idx._backend.getRecordByIndexKey(
+            idx._dbName, idx._indexId, range.exact
+          );
+          resultKey = record ? decodeKeyFromBuffer(record.primaryKey) : undefined;
+        } else {
+          const record = idx._backend.getRecordByIndexRange(
+            idx._dbName, idx._indexId,
+            range.lower, range.upper, range.lowerOpen, range.upperOpen
+          );
+          resultKey = record ? decodeKeyFromBuffer(record.primaryKey) : undefined;
+        }
+        request._readyState = 'done';
+        request._result = resultKey;
+      },
+      () => {
+        idx._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        idx._transaction._deactivate();
+        idx._transaction._requestFinished();
+      }
+    );
 
     return request;
   }
@@ -194,36 +199,53 @@ export class IDBIndex {
     this._ensureValid();
 
     const request = this._transaction._createRequest(this);
+    const idx = this;
 
-    let cnt: number;
+    // Pre-compute query params synchronously
+    let queryParams: any;
     if (query === undefined) {
-      cnt = this._backend.countIndexEntries(this._dbName, this._indexId);
+      queryParams = { type: 'all' };
     } else if (query instanceof IDBKeyRange) {
-      const lower = query.lower !== undefined ? encodeKey(query.lower) : null;
-      const upper = query.upper !== undefined ? encodeKey(query.upper) : null;
-      cnt = this._backend.countIndexEntries(
-        this._dbName, this._indexId,
-        lower, upper, query.lowerOpen, query.upperOpen
-      );
+      queryParams = {
+        type: 'range',
+        lower: query.lower !== undefined ? encodeKey(query.lower) : null,
+        upper: query.upper !== undefined ? encodeKey(query.upper) : null,
+        lowerOpen: query.lowerOpen,
+        upperOpen: query.upperOpen,
+      };
     } else {
       const key = valueToKeyOrThrow(query);
       const encodedKey = encodeKey(key);
-      cnt = this._backend.countIndexEntries(
-        this._dbName, this._indexId,
-        encodedKey, encodedKey, false, false
-      );
+      queryParams = { type: 'exact', key: encodedKey };
     }
 
-    request._readyState = 'done';
-    request._result = cnt;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    this._transaction._queueOperation(
+      () => {
+        let cnt: number;
+        if (queryParams.type === 'all') {
+          cnt = idx._backend.countIndexEntries(idx._dbName, idx._indexId);
+        } else if (queryParams.type === 'range') {
+          cnt = idx._backend.countIndexEntries(
+            idx._dbName, idx._indexId,
+            queryParams.lower, queryParams.upper, queryParams.lowerOpen, queryParams.upperOpen
+          );
+        } else {
+          cnt = idx._backend.countIndexEntries(
+            idx._dbName, idx._indexId,
+            queryParams.key, queryParams.key, false, false
+          );
+        }
+        request._readyState = 'done';
+        request._result = cnt;
+      },
+      () => {
+        idx._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        idx._transaction._deactivate();
+        idx._transaction._requestFinished();
+      }
+    );
 
     return request;
   }
@@ -231,15 +253,16 @@ export class IDBIndex {
   getAll(_query?: any, _count?: number): IDBRequest {
     this._ensureValid();
     const request = this._transaction._createRequest(this);
+    const idx = this;
     // Stub - Phase 9
     request._readyState = 'done';
     request._result = [];
-    queueTask(() => {
-      this._transaction._state = 'active';
+    this._transaction._queueRequestCallback(() => {
+      idx._transaction._state = 'active';
       const event = new Event('success', { bubbles: false, cancelable: false });
       request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
+      idx._transaction._deactivate();
+      idx._transaction._requestFinished();
     });
     return request;
   }
@@ -247,15 +270,16 @@ export class IDBIndex {
   getAllKeys(_query?: any, _count?: number): IDBRequest {
     this._ensureValid();
     const request = this._transaction._createRequest(this);
+    const idx = this;
     // Stub - Phase 9
     request._readyState = 'done';
     request._result = [];
-    queueTask(() => {
-      this._transaction._state = 'active';
+    this._transaction._queueRequestCallback(() => {
+      idx._transaction._state = 'active';
       const event = new Event('success', { bubbles: false, cancelable: false });
       request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
+      idx._transaction._deactivate();
+      idx._transaction._requestFinished();
     });
     return request;
   }

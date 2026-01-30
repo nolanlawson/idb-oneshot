@@ -6,7 +6,6 @@ import { IDBIndex } from './IDBIndex.ts';
 import { IDBKeyRange } from './IDBKeyRange.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { encodeKey, valueToKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
-import { queueTask } from './scheduling.ts';
 import type { IDBValidKey } from './types.ts';
 
 /**
@@ -123,6 +122,7 @@ export class IDBObjectStore {
       throw new DOMException('The transaction is read-only.', 'ReadOnlyError');
     }
 
+    // Key extraction and validation happens synchronously (throws on error)
     let effectiveKey: IDBValidKey;
 
     if (this._keyPath !== null) {
@@ -132,169 +132,142 @@ export class IDBObjectStore {
           'DataError'
         );
       }
-      // Extract key from value using key path
       const extracted = this._extractKeyFromValue(value, this._keyPath);
       if (extracted !== null) {
         effectiveKey = extracted;
       } else if (this._autoIncrement) {
-        effectiveKey = this._nextKey();
-        // Inject key back into value
-        value = this._injectKeyIntoValue(value, this._keyPath, effectiveKey);
+        // Defer key generation to operation time
+        effectiveKey = null as any; // placeholder
       } else {
         throw new DOMException('No key could be extracted from the value', 'DataError');
       }
     } else if (key !== undefined) {
       effectiveKey = valueToKeyOrThrow(key);
     } else if (this._autoIncrement) {
-      effectiveKey = this._nextKey();
+      effectiveKey = null as any; // placeholder
     } else {
       throw new DOMException('No key provided and object store has no key path', 'DataError');
     }
 
-    // Update key generator if needed
-    if (this._autoIncrement && typeof effectiveKey === 'number') {
-      this._maybeUpdateKeyGenerator(effectiveKey);
-    }
-
-    const encodedKey = encodeKey(effectiveKey);
-    const serializedValue = Buffer.from(JSON.stringify(value));
-
     const request = this._transaction._createRequest(this);
 
-    this._transaction._ensureSavepoint();
+    // Capture values needed for deferred execution
+    const store = this;
+    const storeId = this._storeId;
+    const keyPathForAutoInc = this._keyPath;
+    const autoIncrement = this._autoIncrement;
 
-    // Check for unique index constraints
-    const indexes = this._transaction._db._backend.getIndexesForStore(
-      this._transaction._db._name,
-      this._storeId
-    );
+    this._transaction._queueOperation(
+      () => {
+        // === SQLite operation (may be deferred) ===
+        store._transaction._ensureSavepoint();
 
-    for (const idx of indexes) {
-      if (!idx.unique) continue;
-      const indexKeyValue = this._extractKeyFromValue(value, idx.keyPath);
-      if (indexKeyValue === null) continue;
-      const encodedIndexKey = encodeKey(indexKeyValue);
-      const excludeKey = noOverwrite ? undefined : encodedKey;
-      if (this._transaction._db._backend.checkUniqueIndexConstraint(
-        this._transaction._db._name,
-        idx.id,
-        encodedIndexKey,
-        excludeKey
-      )) {
-        request._readyState = 'done';
-        request._error = new DOMException(
-          'A record with the given index key already exists',
-          'ConstraintError'
-        );
-        queueTask(() => {
-          this._transaction._state = 'active';
-          const event = new Event('error', { bubbles: true, cancelable: true });
-          request.dispatchEvent(event);
-          this._transaction._deactivate();
-          this._transaction._requestFinished();
-        });
-        return request;
-      }
-    }
-
-    // Check for existing key if noOverwrite
-    if (noOverwrite) {
-      const existing = this._transaction._db._backend.getRecord(
-        this._transaction._db._name,
-        this._storeId,
-        encodedKey
-      );
-      if (existing) {
-        request._readyState = 'done';
-        request._error = new DOMException(
-          'A record with the given key already exists',
-          'ConstraintError'
-        );
-        queueTask(() => {
-          this._transaction._state = 'active';
-          const event = new Event('error', { bubbles: true, cancelable: true });
-          request.dispatchEvent(event);
-          this._transaction._deactivate();
-          this._transaction._requestFinished();
-        });
-        return request;
-      }
-    }
-
-    // Delete old index entries if replacing
-    if (!noOverwrite) {
-      this._transaction._db._backend.deleteIndexEntriesForRecord(
-        this._transaction._db._name,
-        this._storeId,
-        encodedKey
-      );
-    }
-
-    // Write the record
-    this._transaction._db._backend.putRecord(
-      this._transaction._db._name,
-      this._storeId,
-      encodedKey,
-      serializedValue
-    );
-
-    // Add index entries
-    for (const idx of indexes) {
-      if (idx.multiEntry && typeof idx.keyPath === 'string') {
-        // For multi-entry indexes, extract raw value to handle arrays with non-key elements
-        const rawValue = this._evaluateKeyPathRaw(value, idx.keyPath);
-        if (rawValue === undefined || rawValue === null) continue;
-        if (Array.isArray(rawValue)) {
-          const seen = new Set<string>();
-          for (const item of rawValue) {
-            const k = valueToKey(item);
-            if (k === null) continue;
-            const encoded = encodeKey(k);
-            const encodedStr = Buffer.from(encoded).toString('hex');
-            if (seen.has(encodedStr)) continue;
-            seen.add(encodedStr);
-            this._transaction._db._backend.addIndexEntry(
-              this._transaction._db._name,
-              idx.id,
-              encoded,
-              encodedKey
-            );
+        // Handle auto-increment key generation at operation time
+        if (effectiveKey === null && autoIncrement) {
+          if (keyPathForAutoInc !== null) {
+            effectiveKey = store._nextKey();
+            value = store._injectKeyIntoValue(value, keyPathForAutoInc, effectiveKey);
+          } else {
+            effectiveKey = store._nextKey();
           }
-        } else {
-          // Single value, treat as regular index entry
-          const k = valueToKey(rawValue);
-          if (k === null) continue;
-          const encodedIndexKey = encodeKey(k);
-          this._transaction._db._backend.addIndexEntry(
-            this._transaction._db._name,
+        }
+
+        // Update key generator if needed
+        if (autoIncrement && typeof effectiveKey === 'number') {
+          store._maybeUpdateKeyGenerator(effectiveKey);
+        }
+
+        const encodedKey = encodeKey(effectiveKey);
+        const serializedValue = Buffer.from(JSON.stringify(value));
+
+        // Check for unique index constraints
+        const indexes = store._transaction._db._backend.getIndexesForStore(
+          store._transaction._db._name,
+          storeId
+        );
+
+        for (const idx of indexes) {
+          if (!idx.unique) continue;
+          const indexKeyValue = store._extractKeyFromValue(value, idx.keyPath);
+          if (indexKeyValue === null) continue;
+          const encodedIndexKey = encodeKey(indexKeyValue);
+          const excludeKey = noOverwrite ? undefined : encodedKey;
+          if (store._transaction._db._backend.checkUniqueIndexConstraint(
+            store._transaction._db._name,
             idx.id,
             encodedIndexKey,
+            excludeKey
+          )) {
+            request._readyState = 'done';
+            request._error = new DOMException(
+              'A record with the given index key already exists',
+              'ConstraintError'
+            );
+            request._constraintError = true;
+            return;
+          }
+        }
+
+        // Check for existing key if noOverwrite
+        if (noOverwrite) {
+          const existing = store._transaction._db._backend.getRecord(
+            store._transaction._db._name,
+            storeId,
+            encodedKey
+          );
+          if (existing) {
+            request._readyState = 'done';
+            request._error = new DOMException(
+              'A record with the given key already exists',
+              'ConstraintError'
+            );
+            request._constraintError = true;
+            return;
+          }
+        }
+
+        // Delete old index entries if replacing
+        if (!noOverwrite) {
+          store._transaction._db._backend.deleteIndexEntriesForRecord(
+            store._transaction._db._name,
+            storeId,
             encodedKey
           );
         }
-      } else {
-        const indexKeyValue = this._extractKeyFromValue(value, idx.keyPath);
-        if (indexKeyValue === null) continue;
-        const encodedIndexKey = encodeKey(indexKeyValue);
-        this._transaction._db._backend.addIndexEntry(
-          this._transaction._db._name,
-          idx.id,
-          encodedIndexKey,
-          encodedKey
+
+        // Write the record
+        store._transaction._db._backend.putRecord(
+          store._transaction._db._name,
+          storeId,
+          encodedKey,
+          serializedValue
         );
+
+        // Add index entries
+        store._addIndexEntries(indexes, value, encodedKey);
+
+        request._readyState = 'done';
+        request._result = effectiveKey;
+      },
+      () => {
+        // === Event dispatch ===
+        store._transaction._state = 'active';
+        if (request._constraintError) {
+          const event = new Event('error', { bubbles: true, cancelable: true });
+          const notPrevented = request.dispatchEvent(event);
+          // Per spec: if error event is not preventDefault'd, abort the transaction
+          if (notPrevented && !store._transaction._aborted && store._transaction._state !== 'finished') {
+            store._transaction.abort();
+            return;
+          }
+        } else {
+          const event = new Event('success', { bubbles: false, cancelable: false });
+          request.dispatchEvent(event);
+        }
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
       }
-    }
-
-    request._readyState = 'done';
-    request._result = effectiveKey;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    );
 
     return request;
   }
@@ -304,37 +277,41 @@ export class IDBObjectStore {
 
     const range = queryToRange(query);
     const request = this._transaction._createRequest(this);
-    let resultValue: any;
+    const store = this;
+    const storeId = this._storeId;
 
-    if ('exact' in range) {
-      const raw = this._transaction._db._backend.getRecord(
-        this._transaction._db._name,
-        this._storeId,
-        range.exact
-      );
-      resultValue = raw ? JSON.parse(raw.toString()) : undefined;
-    } else {
-      const record = this._transaction._db._backend.getRecordInRange(
-        this._transaction._db._name,
-        this._storeId,
-        range.lower,
-        range.upper,
-        range.lowerOpen,
-        range.upperOpen
-      );
-      resultValue = record ? JSON.parse(record.value.toString()) : undefined;
-    }
-
-    request._readyState = 'done';
-    request._result = resultValue;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    this._transaction._queueOperation(
+      () => {
+        let resultValue: any;
+        if ('exact' in range) {
+          const raw = store._transaction._db._backend.getRecord(
+            store._transaction._db._name,
+            storeId,
+            range.exact
+          );
+          resultValue = raw ? JSON.parse(raw.toString()) : undefined;
+        } else {
+          const record = store._transaction._db._backend.getRecordInRange(
+            store._transaction._db._name,
+            storeId,
+            range.lower,
+            range.upper,
+            range.lowerOpen,
+            range.upperOpen
+          );
+          resultValue = record ? JSON.parse(record.value.toString()) : undefined;
+        }
+        request._readyState = 'done';
+        request._result = resultValue;
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
+      }
+    );
 
     return request;
   }
@@ -348,39 +325,44 @@ export class IDBObjectStore {
 
     const range = queryToRange(query);
     const request = this._transaction._createRequest(this);
+    const store = this;
+    const storeId = this._storeId;
 
-    if ('exact' in range) {
-      const raw = this._transaction._db._backend.getRecord(
-        this._transaction._db._name,
-        this._storeId,
-        range.exact
-      );
-      request._readyState = 'done';
-      request._result = raw ? valueToKeyOrThrow(query) : undefined;
-    } else {
-      const record = this._transaction._db._backend.getRecordInRange(
-        this._transaction._db._name,
-        this._storeId,
-        range.lower,
-        range.upper,
-        range.lowerOpen,
-        range.upperOpen
-      );
-      request._readyState = 'done';
-      if (record) {
-        request._result = decodeKeyFromBuffer(record.key);
-      } else {
-        request._result = undefined;
+    this._transaction._queueOperation(
+      () => {
+        if ('exact' in range) {
+          const raw = store._transaction._db._backend.getRecord(
+            store._transaction._db._name,
+            storeId,
+            range.exact
+          );
+          request._readyState = 'done';
+          request._result = raw ? valueToKeyOrThrow(query) : undefined;
+        } else {
+          const record = store._transaction._db._backend.getRecordInRange(
+            store._transaction._db._name,
+            storeId,
+            range.lower,
+            range.upper,
+            range.lowerOpen,
+            range.upperOpen
+          );
+          request._readyState = 'done';
+          if (record) {
+            request._result = decodeKeyFromBuffer(record.key);
+          } else {
+            request._result = undefined;
+          }
+        }
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
       }
-    }
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    );
 
     return request;
   }
@@ -393,41 +375,44 @@ export class IDBObjectStore {
 
     const range = queryToRange(query);
     const request = this._transaction._createRequest(this);
+    const store = this;
+    const storeId = this._storeId;
 
-    this._transaction._ensureSavepoint();
-
-    if ('exact' in range) {
-      this._transaction._db._backend.deleteIndexEntriesForRecord(
-        this._transaction._db._name,
-        this._storeId,
-        range.exact
-      );
-      this._transaction._db._backend.deleteRecord(
-        this._transaction._db._name,
-        this._storeId,
-        range.exact
-      );
-    } else {
-      this._transaction._db._backend.deleteRecordsInRange(
-        this._transaction._db._name,
-        this._storeId,
-        range.lower,
-        range.upper,
-        range.lowerOpen,
-        range.upperOpen
-      );
-    }
-
-    request._readyState = 'done';
-    request._result = undefined;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    this._transaction._queueOperation(
+      () => {
+        store._transaction._ensureSavepoint();
+        if ('exact' in range) {
+          store._transaction._db._backend.deleteIndexEntriesForRecord(
+            store._transaction._db._name,
+            storeId,
+            range.exact
+          );
+          store._transaction._db._backend.deleteRecord(
+            store._transaction._db._name,
+            storeId,
+            range.exact
+          );
+        } else {
+          store._transaction._db._backend.deleteRecordsInRange(
+            store._transaction._db._name,
+            storeId,
+            range.lower,
+            range.upper,
+            range.lowerOpen,
+            range.upperOpen
+          );
+        }
+        request._readyState = 'done';
+        request._result = undefined;
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
+      }
+    );
 
     return request;
   }
@@ -439,23 +424,27 @@ export class IDBObjectStore {
     }
 
     const request = this._transaction._createRequest(this);
+    const store = this;
+    const storeId = this._storeId;
 
-    this._transaction._ensureSavepoint();
-    this._transaction._db._backend.clearRecords(
-      this._transaction._db._name,
-      this._storeId
+    this._transaction._queueOperation(
+      () => {
+        store._transaction._ensureSavepoint();
+        store._transaction._db._backend.clearRecords(
+          store._transaction._db._name,
+          storeId
+        );
+        request._readyState = 'done';
+        request._result = undefined;
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
+      }
     );
-
-    request._readyState = 'done';
-    request._result = undefined;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
 
     return request;
   }
@@ -463,47 +452,65 @@ export class IDBObjectStore {
   count(query?: any): IDBRequest {
     this._ensureValid();
     const request = this._transaction._createRequest(this);
+    const store = this;
+    const storeId = this._storeId;
 
-    let cnt: number;
+    // Pre-compute query params synchronously
+    let queryParams: any;
     if (query === undefined) {
-      cnt = this._transaction._db._backend.countRecords(
-        this._transaction._db._name,
-        this._storeId
-      );
+      queryParams = { type: 'all' };
     } else if (query instanceof IDBKeyRange) {
-      const lower = query.lower !== undefined ? encodeKey(query.lower) : null;
-      const upper = query.upper !== undefined ? encodeKey(query.upper) : null;
-      cnt = this._transaction._db._backend.countRecords(
-        this._transaction._db._name,
-        this._storeId,
-        lower,
-        upper,
-        query.lowerOpen,
-        query.upperOpen
-      );
+      queryParams = {
+        type: 'range',
+        lower: query.lower !== undefined ? encodeKey(query.lower) : null,
+        upper: query.upper !== undefined ? encodeKey(query.upper) : null,
+        lowerOpen: query.lowerOpen,
+        upperOpen: query.upperOpen,
+      };
     } else {
       const key = valueToKeyOrThrow(query);
       const encodedKey = encodeKey(key);
-      cnt = this._transaction._db._backend.countRecords(
-        this._transaction._db._name,
-        this._storeId,
-        encodedKey,
-        encodedKey,
-        false,
-        false
-      );
+      queryParams = { type: 'exact', key: encodedKey };
     }
 
-    request._readyState = 'done';
-    request._result = cnt;
-
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
+    this._transaction._queueOperation(
+      () => {
+        let cnt: number;
+        if (queryParams.type === 'all') {
+          cnt = store._transaction._db._backend.countRecords(
+            store._transaction._db._name,
+            storeId
+          );
+        } else if (queryParams.type === 'range') {
+          cnt = store._transaction._db._backend.countRecords(
+            store._transaction._db._name,
+            storeId,
+            queryParams.lower,
+            queryParams.upper,
+            queryParams.lowerOpen,
+            queryParams.upperOpen
+          );
+        } else {
+          cnt = store._transaction._db._backend.countRecords(
+            store._transaction._db._name,
+            storeId,
+            queryParams.key,
+            queryParams.key,
+            false,
+            false
+          );
+        }
+        request._readyState = 'done';
+        request._result = cnt;
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
+      }
+    );
 
     return request;
   }
@@ -676,7 +683,7 @@ export class IDBObjectStore {
     }
   }
 
-  private _nextKey(): number {
+  _nextKey(): number {
     const meta = this._transaction._db._backend.getObjectStoreMetadata(
       this._transaction._db._name,
       this._name
@@ -749,7 +756,7 @@ export class IDBObjectStore {
     return current;
   }
 
-  private _injectKeyIntoValue(value: any, keyPath: string | string[], key: IDBValidKey): any {
+  _injectKeyIntoValue(value: any, keyPath: string | string[], key: IDBValidKey): any {
     if (typeof keyPath === 'string') {
       const clone = typeof value === 'object' && value !== null ? { ...value } : value;
       const parts = keyPath.split('.');
@@ -764,6 +771,53 @@ export class IDBObjectStore {
       return clone;
     }
     return value;
+  }
+
+  /** Add index entries for a record */
+  private _addIndexEntries(indexes: any[], value: any, encodedKey: Uint8Array): void {
+    for (const idx of indexes) {
+      if (idx.multiEntry && typeof idx.keyPath === 'string') {
+        const rawValue = this._evaluateKeyPathRaw(value, idx.keyPath);
+        if (rawValue === undefined || rawValue === null) continue;
+        if (Array.isArray(rawValue)) {
+          const seen = new Set<string>();
+          for (const item of rawValue) {
+            const k = valueToKey(item);
+            if (k === null) continue;
+            const encoded = encodeKey(k);
+            const encodedStr = Buffer.from(encoded).toString('hex');
+            if (seen.has(encodedStr)) continue;
+            seen.add(encodedStr);
+            this._transaction._db._backend.addIndexEntry(
+              this._transaction._db._name,
+              idx.id,
+              encoded,
+              encodedKey
+            );
+          }
+        } else {
+          const k = valueToKey(rawValue);
+          if (k === null) continue;
+          const encodedIndexKey = encodeKey(k);
+          this._transaction._db._backend.addIndexEntry(
+            this._transaction._db._name,
+            idx.id,
+            encodedIndexKey,
+            encodedKey
+          );
+        }
+      } else {
+        const indexKeyValue = this._extractKeyFromValue(value, idx.keyPath);
+        if (indexKeyValue === null) continue;
+        const encodedIndexKey = encodeKey(indexKeyValue);
+        this._transaction._db._backend.addIndexEntry(
+          this._transaction._db._name,
+          idx.id,
+          encodedIndexKey,
+          encodedKey
+        );
+      }
+    }
   }
 
   private _populateIndex(indexId: number, keyPath: string | string[], unique: boolean, multiEntry: boolean): void {

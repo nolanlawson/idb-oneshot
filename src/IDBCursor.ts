@@ -2,7 +2,7 @@
 
 import { IDBKeyRange } from './IDBKeyRange.ts';
 import { encodeKey, compareKeys, valueToKey, decodeKey } from './keys.ts';
-import { queueTask } from './scheduling.ts';
+// queueTask not imported directly; we use transaction._queueRequestCallback
 import type { IDBValidKey } from './types.ts';
 
 const decodeKeyFromBuffer = decodeKey;
@@ -321,7 +321,7 @@ export class IDBCursor {
     request._readyState = 'done';
     request._result = found ? this : null;
 
-    queueTask(() => {
+    transaction._queueRequestCallback(() => {
       // Set cursor flags just before event dispatch so they're correct during handler
       if (found) {
         this._gotValue = true;
@@ -678,39 +678,41 @@ export function openObjectStoreCursor(
   const CursorClass = keyOnly ? IDBCursor : IDBCursorWithValue;
   const cursor = new CursorClass(state);
 
-  // Get the first record
-  const isReverse = direction === 'prev' || direction === 'prevunique';
-  const records = backend.getRecordsForCursor(
-    dbName, objectStore._storeId,
-    lower, upper, lowerOpen, upperOpen,
-    direction
-  );
+  transaction._queueOperation(
+    () => {
+      // Get the first record (deferred for scheduler)
+      const records = backend.getRecordsForCursor(
+        dbName, objectStore._storeId,
+        lower, upper, lowerOpen, upperOpen,
+        direction
+      );
 
-  if (records.length > 0) {
-    const first = records[0];
-    cursor._position = new Uint8Array(first.key);
-    cursor._objectStorePosition = new Uint8Array(first.key);
-    cursor._key = decodeKeyFromBuffer(first.key);
-    cursor._primaryKey = cursor._key;
-    if (!keyOnly) {
-      cursor._value = JSON.parse(first.value.toString());
+      if (records.length > 0) {
+        const first = records[0];
+        cursor._position = new Uint8Array(first.key);
+        cursor._objectStorePosition = new Uint8Array(first.key);
+        cursor._key = decodeKeyFromBuffer(first.key);
+        cursor._primaryKey = cursor._key;
+        if (!keyOnly) {
+          cursor._value = JSON.parse(first.value.toString());
+        }
+        cursor._gotValue = true;
+
+        request._readyState = 'done';
+        request._result = cursor;
+      } else {
+        request._readyState = 'done';
+        request._result = null;
+      }
+    },
+    () => {
+      transaction._state = 'active';
+      const event = new Event('success', { bubbles: false, cancelable: false });
+      request.dispatchEvent(event);
+      transaction._deactivate();
+      transaction._requestFinished();
     }
-    cursor._gotValue = true;
-
-    request._readyState = 'done';
-    request._result = cursor;
-  } else {
-    request._readyState = 'done';
-    request._result = null;
-  }
-
-  queueTask(() => {
-    transaction._state = 'active';
-    const event = new Event('success', { bubbles: false, cancelable: false });
-    request.dispatchEvent(event);
-    transaction._deactivate();
-    transaction._requestFinished();
-  });
+  );
 
   return request;
 }
@@ -773,40 +775,40 @@ export function openIndexCursor(
   const CursorClass = keyOnly ? IDBCursor : IDBCursorWithValue;
   const cursor = new CursorClass(state);
 
-  const isReverse = direction === 'prev' || direction === 'prevunique';
-  const isUnique = direction === 'nextunique' || direction === 'prevunique';
+  transaction._queueOperation(
+    () => {
+      const entries = backend.getIndexEntriesForCursor(
+        dbName, index._indexId, storeId,
+        lower, upper, lowerOpen, upperOpen,
+        direction
+      );
 
-  const entries = backend.getIndexEntriesForCursor(
-    dbName, index._indexId, storeId,
-    lower, upper, lowerOpen, upperOpen,
-    direction
-  );
+      if (entries.length > 0) {
+        const first = entries[0];
+        cursor._position = new Uint8Array(first.index_key);
+        cursor._objectStorePosition = new Uint8Array(first.primary_key);
+        cursor._key = decodeKeyFromBuffer(first.index_key);
+        cursor._primaryKey = decodeKeyFromBuffer(first.primary_key);
+        if (!keyOnly) {
+          cursor._value = JSON.parse(first.value.toString());
+        }
+        cursor._gotValue = true;
 
-  if (entries.length > 0) {
-    const first = entries[0];
-    cursor._position = new Uint8Array(first.index_key);
-    cursor._objectStorePosition = new Uint8Array(first.primary_key);
-    cursor._key = decodeKeyFromBuffer(first.index_key);
-    cursor._primaryKey = decodeKeyFromBuffer(first.primary_key);
-    if (!keyOnly) {
-      cursor._value = JSON.parse(first.value.toString());
+        request._readyState = 'done';
+        request._result = cursor;
+      } else {
+        request._readyState = 'done';
+        request._result = null;
+      }
+    },
+    () => {
+      transaction._state = 'active';
+      const event = new Event('success', { bubbles: false, cancelable: false });
+      request.dispatchEvent(event);
+      transaction._deactivate();
+      transaction._requestFinished();
     }
-    cursor._gotValue = true;
-
-    request._readyState = 'done';
-    request._result = cursor;
-  } else {
-    request._readyState = 'done';
-    request._result = null;
-  }
-
-  queueTask(() => {
-    transaction._state = 'active';
-    const event = new Event('success', { bubbles: false, cancelable: false });
-    request.dispatchEvent(event);
-    transaction._deactivate();
-    transaction._requestFinished();
-  });
+  );
 
   return request;
 }

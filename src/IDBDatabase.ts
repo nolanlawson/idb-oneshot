@@ -50,7 +50,10 @@ export class IDBDatabase extends EventTarget {
   }
 
   get objectStoreNames(): DOMStringList {
-    // Always refresh from backend
+    // After close, return frozen cache
+    if (this._closePending && this._objectStoreNamesCache) {
+      return this._objectStoreNamesCache;
+    }
     const names = this._backend.getObjectStoreNames(this._name);
     this._objectStoreNamesCache = new DOMStringList(names);
     return this._objectStoreNamesCache;
@@ -59,6 +62,9 @@ export class IDBDatabase extends EventTarget {
   close(): void {
     if (!this._closePending) {
       this._closePending = true;
+      // Freeze the objectStoreNames at close time
+      const names = this._backend.getObjectStoreNames(this._name);
+      this._objectStoreNamesCache = new DOMStringList(names);
       // The actual close happens when all transactions complete
       // For now, mark as closed immediately
       this._closed = true;
@@ -192,6 +198,9 @@ export class IDBDatabase extends EventTarget {
 
     if (typeof storeNames === 'string') {
       storeNames = [storeNames];
+    } else {
+      // Convert iterable to array and deduplicate
+      storeNames = [...new Set(storeNames)];
     }
 
     if (storeNames.length === 0) {
@@ -218,16 +227,28 @@ export class IDBDatabase extends EventTarget {
     }
 
     const txn = new IDBTransaction(this, storeNames, mode);
+    txn._useScheduler = true;
 
-    // Auto-commit when no more requests are queued
-    // The transaction starts active, becomes inactive after each event dispatch
-    // If it becomes inactive with no pending requests, it auto-commits
-    queueMicrotask(() => {
-      if (txn._state === 'active' && txn._pendingRequestCount === 0) {
+    // Register with the transaction scheduler
+    getScheduler(this._name).addTransaction(txn, txn._storeNames, mode, () => {
+      txn._schedulerStart();
+    });
+
+    // Deactivate the transaction after the current microtask checkpoint.
+    // Per spec, a newly created transaction is active during the synchronous
+    // code that created it AND through the microtask checkpoint that follows.
+    // It becomes inactive before the next macrotask.
+    //
+    // We schedule deactivation at the END of the microtask checkpoint by
+    // chaining: queueMicrotask -> queueMicrotask.  The first microtask runs
+    // after user-level microtasks (Promise.then) from the same turn; the
+    // nested one runs after any microtasks those triggered.
+    queueMicrotask(() => queueMicrotask(() => {
+      if (txn._state === 'active') {
         txn._deactivate();
         txn._maybeAutoCommit();
       }
-    });
+    }));
 
     return txn;
   }
@@ -252,3 +273,4 @@ export class IDBDatabase extends EventTarget {
 
 // Import queueTask for the transaction method - we need this at the bottom
 import { queueTask } from './scheduling.ts';
+import { getScheduler } from './transaction-scheduler.ts';

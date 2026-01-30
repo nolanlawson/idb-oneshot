@@ -239,4 +239,63 @@ Phase 5: Cursors — COMPLETE
     - idbindex_keyPath.any.js: now 3/3 PASS (was 1/3, needed openCursor)
   - npx tsc --noEmit passes clean
 
-Next: Phase 6 — Transaction Lifecycle + Scheduling
+Phase 6: Transaction Lifecycle + Scheduling — COMPLETE
+  - Created src/transaction-scheduler.ts (new file):
+    - DatabaseScheduler class with per-database transaction queue
+    - Scope-based locking: RW transactions block RW/RO with overlapping scopes
+    - Creation order enforcement for conflicting transactions
+    - Global scheduler map keyed by database name
+    - Async start via queueMicrotask to avoid re-entrance
+  - Major refactor: deferred SQLite operations via _queueOperation pattern
+    - IDBObjectStore: all CRUD methods (add/put/get/getKey/delete/clear/count) defer both
+      SQLite operations and event dispatch until scheduler starts the transaction
+    - IDBIndex: get/getKey/count defer via same pattern
+    - IDBCursor: openObjectStoreCursor/openIndexCursor defer via _queueOperation
+    - Prevents savepoint nesting issues when transactions queue before active ones finish
+  - Updated IDBTransaction (src/IDBTransaction.ts):
+    - Added scheduler fields: _started, _pendingCallbacks, _useScheduler, _commitOnStart
+    - _queueOperation(operation, eventCallback): buffers both when not started, executes immediately when started
+    - _queueRequestCallback(callback): buffers just event callback when not started
+    - _schedulerStart(): flushes buffered operations, triggers deferred auto-commit for empty transactions
+    - abort/commit notify scheduler via getScheduler().transactionFinished()
+    - Event bubbling: abort events bubble from transaction to database, respecting stopPropagation
+  - Updated IDBDatabase (src/IDBDatabase.ts):
+    - transaction() registers with scheduler via getScheduler().addTransaction()
+    - Transaction deactivation via chained queueMicrotask (active through microtask checkpoint, inactive before next macrotask)
+    - Store name deduplication via [...new Set(storeNames)]
+    - Frozen objectStoreNames cache on close()
+  - Updated IDBRequest (src/IDBRequest.ts):
+    - Event bubbling: error events bubble from request to transaction to database, respecting stopPropagation/cancelBubble
+    - Added Symbol.toStringTag to IDBOpenDBRequest
+    - Added _constraintError flag for ConstraintError handling
+  - Updated IDBObjectStore (src/IDBObjectStore.ts):
+    - ConstraintError handling: unhandled error events auto-abort the transaction (per spec)
+    - Error event dispatch returns notPrevented flag for abort decision
+  - Updated IDBTransaction abort() for versionchange:
+    - _versionChangeTransactionFinished fires in separate task after abort event propagates
+  - WPT results (Phase 6 target tests):
+    - transaction-scheduling-across-connections.any.js: 1/1 PASS (new)
+    - transaction-scheduling-across-databases.any.js: 1/1 PASS (was passing)
+    - transaction-scheduling-ordering.any.js: 1/1 PASS (new)
+    - transaction-scheduling-rw-scopes.any.js: 1/1 PASS (new)
+    - transaction-scheduling-mixed-scopes.any.js: 1/1 PASS (new)
+    - transaction-scheduling-ro-waits-for-rw.any.js: 1/1 PASS (was passing)
+    - transaction-scheduling-within-database.any.js: 1/1 PASS (was passing)
+    - writer-starvation.any.js: 1/1 PASS (was passing)
+    - idbtransaction.any.js: 2/2 PASS (was 1/2)
+    - idbtransaction-oncomplete.any.js: 1/1 PASS (was passing)
+    - idbtransaction_abort.any.js: 3/3 PASS (was 2/3)
+    - idbtransaction_objectStoreNames.any.js: 7/8 PASS (was 4/8, remaining: unusual names SQLite issue)
+    - transaction-deactivation-timing.any.js: 4/5 PASS (was 3/5, remaining: microtask between event listeners)
+    - transaction-lifetime-empty.any.js: 2/2 PASS (was 0/2)
+    - transaction-requestqueue.any.js: 1/1 PASS (was passing)
+    - transaction-create_in_versionchange.any.js: 1/1 PASS (was passing)
+    - upgrade-transaction-deactivation-timing.any.js: 3/3 PASS (bonus)
+    - transaction-lifetime.any.js: 0/0 ERROR (needs blocked event + connection close)
+    - open-request-queue.any.js: 0/0 ERROR (needs FIFO queue)
+    - delete-request-queue.any.js: 0/1 FAIL (WPT test bug: this.saw vs saw)
+  - No regressions in previously passing tests
+  - Overall WPT pass rate: 688/1076 subtests (63.9%)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 7 — Transaction Abort + Metadata Revert
