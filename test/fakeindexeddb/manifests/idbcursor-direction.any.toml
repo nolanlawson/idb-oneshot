@@ -1,0 +1,14 @@
+["IDBCursor.direction - next"]
+expectation = "FAIL"
+
+["IDBCursor.direction - nextunique"]
+expectation = "FAIL"
+
+["IDBCursor.direction - prev"]
+expectation = "FAIL"
+
+["IDBCursor.direction - prevunique"]
+expectation = "FAIL"
+
+["IDBCursor.direction - undefined"]
+expectation = "FAIL"

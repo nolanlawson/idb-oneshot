@@ -1,0 +1,5 @@
+["Event order when unique constraint is triggered"]
+expectation = "FAIL"
+
+["Event ordering for ConstraintError on request"]
+expectation = "FAIL"

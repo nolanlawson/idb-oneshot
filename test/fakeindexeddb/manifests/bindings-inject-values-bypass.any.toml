@@ -1,0 +1,2 @@
+["Returning values to script should bypass prototype chain"]
+expectation = "FAIL"

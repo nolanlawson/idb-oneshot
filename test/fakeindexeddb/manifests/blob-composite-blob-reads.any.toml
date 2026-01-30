@@ -1,0 +1,5 @@
+["Composite Blob Handling: Many blobs: direct"]
+expectation = "FAIL"
+
+["Composite Blob Handling: Many blobs: fetch-blob-url"]
+expectation = "FAIL"

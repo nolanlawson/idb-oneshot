@@ -1,0 +1,2 @@
+["readyState accessor is valid after execution context is destroyed"]
+expectation = "FAIL"

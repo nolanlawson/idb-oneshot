@@ -1,0 +1,11 @@
+["cursor.request from IDBIndex.openCursor"]
+expectation = "FAIL"
+
+["cursor.request from IDBIndex.openKeyCursor"]
+expectation = "FAIL"
+
+["cursor.request from IDBObjectStore.openCursor"]
+expectation = "FAIL"
+
+["cursor.request from IDBObjectStore.openKeyCursor"]
+expectation = "FAIL"

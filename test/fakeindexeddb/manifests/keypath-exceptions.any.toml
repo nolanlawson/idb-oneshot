@@ -1,0 +1,5 @@
+["Key path evaluation: Exceptions from enumerable getters on prototype"]
+expectation = "FAIL"
+
+["Key path evaluation: Exceptions from non-enumerable getters on prototype"]
+expectation = "FAIL"

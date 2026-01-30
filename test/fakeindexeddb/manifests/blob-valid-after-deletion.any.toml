@@ -1,0 +1,2 @@
+["Blobs stay alive after their records are deleted."]
+expectation = "FAIL"

@@ -4,3 +4,6 @@
 [submodule "wpt"]
 	path = wpt
 	url = git@github.com:web-platform-tests/wpt.git
+[submodule "fakeIndexedDB"]
+	path = fakeIndexedDB
+	url = git@github.com:dumbmatter/fakeIndexedDB.git

@@ -1,0 +1,5 @@
+["IDBCursor.source - IDBIndex"]
+expectation = "FAIL"
+
+["IDBCursor.source - IDBObjectStore"]
+expectation = "FAIL"

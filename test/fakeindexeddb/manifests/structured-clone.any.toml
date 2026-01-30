@@ -1,0 +1,26 @@
+[": [object Object]"]
+expectation = "FAIL"
+
+["Blob: [object Blob]"]
+expectation = "FAIL"
+
+["DOMMatrix: [object Object]"]
+expectation = "FAIL"
+
+["DOMMatrixReadOnly: [object Object]"]
+expectation = "FAIL"
+
+["DOMPoint: [object Object]"]
+expectation = "FAIL"
+
+["DOMPointReadOnly: [object Object]"]
+expectation = "FAIL"
+
+["DOMRect: [object Object]"]
+expectation = "FAIL"
+
+["DOMRectReadOnly: [object Object]"]
+expectation = "FAIL"
+
+["File: [object Blob]"]
+expectation = "FAIL"

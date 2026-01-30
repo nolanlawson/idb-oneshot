@@ -1,0 +1,11 @@
+["IDBCursor asyncness - advance"]
+expectation = "FAIL"
+
+["IDBCursor asyncness - continue"]
+expectation = "FAIL"
+
+["IDBCursor asyncness - fresh advance still async"]
+expectation = "FAIL"
+
+["IDBCursor asyncness - fresh continue still async"]
+expectation = "FAIL"

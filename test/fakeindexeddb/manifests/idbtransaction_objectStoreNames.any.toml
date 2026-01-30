@@ -1,0 +1,2 @@
+["IDBTransaction.objectStoreNames - unusual names"]
+expectation = "FAIL"

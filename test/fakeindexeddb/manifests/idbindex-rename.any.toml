@@ -1,0 +1,2 @@
+["IndexedDB index can be renamed to \"\\uDC00\\uD800\""]
+expectation = "FAIL"

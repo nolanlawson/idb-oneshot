@@ -1,0 +1,5 @@
+["Abort transaction after deleting database in upgradeneeded event handler"]
+expectation = "FAIL"
+
+["indexedDB.delete called from upgradeneeded handler"]
+expectation = "FAIL"

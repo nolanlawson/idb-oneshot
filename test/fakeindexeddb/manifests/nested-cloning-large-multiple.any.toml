@@ -1,0 +1,5 @@
+["multiple requests of objects with blobs and large typed arrays"]
+expectation = "FAIL"
+
+["multiple requests of objects with blobs and large typed arrays with key generator"]
+expectation = "FAIL"
