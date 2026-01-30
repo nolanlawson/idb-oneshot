@@ -33,6 +33,8 @@ export class IDBTransaction extends EventTarget {
   _deletedStoreCache: Map<string, any> = new Map(); // Cached IDBObjectStore instances for deleted stores
   _createdIndexes: Array<{ store: any; index: any; name: string }> = []; // Indexes created
   _deletedIndexes: Array<{ store: any; index: any; name: string }> = []; // Indexes deleted
+  _renamedStores?: Array<{ store: any; oldName: string; newName: string }>; // Stores renamed
+  _renamedIndexes?: Array<{ index: any; store: any; oldName: string; newName: string }>; // Indexes renamed
 
   // Transaction scheduling
   _started: boolean = false; // Whether the scheduler has given permission to run
@@ -122,14 +124,16 @@ export class IDBTransaction extends EventTarget {
   }
 
   abort(): void {
-    if (this._state === 'committing' || this._state === 'finished') {
+    if (this._state === 'committing' || this._state === 'finished' || this._aborted) {
       throw new DOMException(
         "Failed to execute 'abort' on 'IDBTransaction': The transaction has already been committed or aborted.",
         'InvalidStateError'
       );
     }
     this._aborted = true;
-    this._state = 'finished';
+    // Don't set _state to 'finished' yet - it transitions through cleanup.
+    // Set to 'inactive' so operations see it as "not active" but still "running".
+    this._state = 'inactive';
     this._error = new DOMException('The transaction was aborted.', 'AbortError');
 
     // Rollback SQLite savepoint
@@ -169,6 +173,10 @@ export class IDBTransaction extends EventTarget {
         request.dispatchEvent(errorEvent);
       }
 
+      // Set state to 'finished' BEFORE firing abort event
+      // so abort event handlers see the transaction as "no longer running"
+      this._state = 'finished';
+
       const abortEvent = new Event('abort', { bubbles: true, cancelable: false });
       this.dispatchEvent(abortEvent);
 
@@ -189,6 +197,52 @@ export class IDBTransaction extends EventTarget {
 
   /** Revert metadata changes made during a versionchange transaction */
   _revertMetadata(): void {
+    // Revert renamed indexes (in reverse order)
+    // Only revert renames for indexes that were NOT created in this transaction
+    if (this._renamedIndexes) {
+      for (let i = this._renamedIndexes.length - 1; i >= 0; i--) {
+        const { index, store, oldName, newName } = this._renamedIndexes[i];
+        // Skip if the index was created in this transaction (it will be marked deleted)
+        if (index._createdInTransaction === this) continue;
+        // Revert in-memory name
+        index._name = oldName;
+        // Update cache
+        store._indexCache.delete(newName);
+        store._indexCache.set(oldName, index);
+        store._indexNamesCache = null;
+      }
+    }
+
+    // Revert renamed stores (in reverse order)
+    // Only revert renames for stores that were NOT created in this transaction
+    if (this._renamedStores) {
+      // Build set of store objects that were created in this transaction
+      const createdStoreObjects = new Set<any>();
+      for (const name of this._createdStoreNames) {
+        // Find in cache using current or original name
+        for (const [, s] of this._objectStoreCache) {
+          if (s._name === name) createdStoreObjects.add(s);
+        }
+      }
+      // Also check renames: if the first rename's oldName matches a created store name
+      for (const { store, oldName } of this._renamedStores) {
+        if (this._createdStoreNames.includes(oldName)) {
+          createdStoreObjects.add(store);
+        }
+      }
+
+      for (let i = this._renamedStores.length - 1; i >= 0; i--) {
+        const { store, oldName, newName } = this._renamedStores[i];
+        // Skip if the store was created in this transaction (it will be marked deleted)
+        if (createdStoreObjects.has(store)) continue;
+        // Revert in-memory name
+        store._name = oldName;
+        // Update cache
+        this._objectStoreCache.delete(newName);
+        this._objectStoreCache.set(oldName, store);
+      }
+    }
+
     // Revert created stores: mark them as deleted
     for (const name of this._createdStoreNames) {
       const store = this._objectStoreCache.get(name);

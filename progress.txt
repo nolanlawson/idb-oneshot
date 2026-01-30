@@ -339,4 +339,68 @@ Phase 7: Transaction Abort + Metadata Revert — COMPLETE
   - Overall WPT pass rate: 702/1077 subtests (65.2%)
   - npx tsc --noEmit passes clean
 
-Next: Phase 8 — Exception Ordering + Rename
+Phase 8: Exception Ordering + Rename — COMPLETE
+  - Fixed exception ordering in IDBCursor.advance:
+    - TypeError (count=0) now precedes TransactionInactiveError per spec
+  - Fixed exception ordering in IDBCursor.continuePrimaryKey:
+    - Added _ensureSourceValid() call before InvalidAccessError checks
+    - Deleted source check now precedes incorrect source/direction checks
+  - Fixed exception ordering in IDBDatabase.createObjectStore:
+    - SyntaxError (invalid keyPath) now precedes ConstraintError (duplicate name) per spec
+    - InvalidStateError (not running upgrade) distinguished from TransactionInactiveError
+    - Finished or aborted upgrade transactions correctly throw InvalidStateError
+  - Fixed exception ordering in IDBDatabase.deleteObjectStore:
+    - Same InvalidStateError vs TransactionInactiveError fix as createObjectStore
+  - Fixed exception ordering in IDBDatabase.transaction:
+    - NotFoundError (store not found) now precedes TypeError (invalid mode) per spec
+  - Improved IDBTransaction.abort() state management:
+    - State transitions: active/inactive → inactive (aborted flag set) → finished (after abort event fires)
+    - Abort event handlers see transaction state as 'finished' (no longer running)
+    - Code synchronously after abort() sees state as 'inactive' (still running but not active)
+  - Implemented IDBObjectStore.name setter (rename):
+    - Validates: versionchange transaction, not deleted, transaction active
+    - ConstraintError for duplicate names, toString() exception re-raising
+    - Updates SQLite backend, in-memory state, transaction cache, objectStoreNames
+    - Tracks renames for abort revert
+  - Implemented IDBIndex.name setter (rename):
+    - Same validation pattern as object store rename
+    - Updates SQLite backend, index cache, indexNames
+    - Tracks renames for abort revert
+  - Added SQLiteBackend methods:
+    - renameObjectStore(): UPDATE object_stores SET name
+    - renameIndex(): UPDATE indexes SET name
+  - Updated IDBTransaction._revertMetadata() for rename abort:
+    - Reverts renamed stores/indexes in reverse order
+    - Skips revert for stores/indexes created in same transaction (keeps last name)
+  - WPT results (Phase 8 target tests):
+    Exception ordering (74/76 passing, 2 are Phase 9 getAll/getAllKeys):
+    - idbcursor-advance-exception-order.any.js: 3/3 PASS (was 2/3)
+    - idbcursor-continue-exception-order.any.js: 3/3 PASS (unchanged)
+    - idbcursor-continuePrimaryKey-exception-order.any.js: 13/13 PASS (was 11/13)
+    - idbcursor-delete-exception-order.any.js: 3/3 PASS (unchanged)
+    - idbcursor-update-exception-order.any.js: 4/4 PASS (unchanged)
+    - idbdatabase-createObjectStore-exception-order.any.js: 4/4 PASS (was 2/4)
+    - idbdatabase-deleteObjectStore-exception-order.any.js: 2/2 PASS (was 1/2)
+    - idbdatabase-transaction-exception-order.any.js: 4/4 PASS (was 3/4)
+    - idbindex-query-exception-order.any.js: 12/12 PASS (unchanged)
+    - idbobjectstore-add-put-exception-order.any.js: 6/6 PASS (unchanged)
+    - idbobjectstore-clear-exception-order.any.js: 2/2 PASS (unchanged)
+    - idbobjectstore-delete-exception-order.any.js: 3/3 PASS (unchanged)
+    - idbobjectstore-deleteIndex-exception-order.any.js: 3/3 PASS (unchanged)
+    - idbobjectstore-query-exception-order.any.js: 10/12 (2 fail: getAll/getAllKeys — Phase 9)
+    - idbtransaction-objectStore-exception-order.any.js: 1/1 PASS (unchanged)
+    Rename (28/29 passing):
+    - idbobjectstore-rename-store.any.js: 10/11 PASS (1 fail: surrogate pair SQLite encoding)
+    - idbobjectstore-rename-errors.any.js: 6/6 PASS
+    - idbobjectstore-rename-abort.any.js: 2/2 PASS
+    - idbindex-rename-errors.any.js: 6/6 PASS
+    - idbindex-rename-abort.any.js: 2/2 PASS
+  - Bonus improvements from abort state management:
+    - idbfactory_open.any.js: 29/29 PASS (was 28/29)
+    - upgrade-transaction-lifecycle-backend-aborted.any.js: 1/2 PASS (was 0/2)
+    - upgrade-transaction-lifecycle-user-aborted.any.js: 3/4 PASS (was 2/4)
+  - No regressions in previously passing tests
+  - Overall WPT pass rate: 739/1077 subtests (68.6%), up from 702/1077 (65.2%)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 9 — getAll / getAllKeys / getAllRecords

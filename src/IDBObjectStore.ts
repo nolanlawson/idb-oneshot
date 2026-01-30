@@ -80,9 +80,81 @@ export class IDBObjectStore {
     return this._name;
   }
 
-  set name(_value: string) {
-    // Rename - Phase 8
-    throw new DOMException('Not yet implemented', 'InvalidStateError');
+  set name(newName: string) {
+    const txn = this._transaction;
+
+    // Per spec exception ordering:
+    // 1. InvalidStateError if not in a versionchange transaction
+    if (txn._mode !== 'versionchange') {
+      throw new DOMException(
+        "Failed to set the 'name' property on 'IDBObjectStore': The database is not running a version change transaction.",
+        'InvalidStateError'
+      );
+    }
+
+    // 2. InvalidStateError if the store has been deleted
+    if (this._deleted) {
+      throw new DOMException(
+        "Failed to set the 'name' property on 'IDBObjectStore': The object store has been deleted.",
+        'InvalidStateError'
+      );
+    }
+
+    // 3. TransactionInactiveError if transaction is not active
+    if (txn._state !== 'active') {
+      throw new DOMException(
+        "Failed to set the 'name' property on 'IDBObjectStore': The transaction is not active.",
+        'TransactionInactiveError'
+      );
+    }
+
+    // Stringify the name (may throw if toString() throws)
+    newName = String(newName);
+
+    // If same name, no-op
+    if (newName === this._name) {
+      return;
+    }
+
+    // 4. ConstraintError if another store already has this name
+    const existingNames = txn._db._backend.getObjectStoreNames(txn._db._name);
+    if (existingNames.includes(newName)) {
+      throw new DOMException(
+        `An object store with the name '${newName}' already exists.`,
+        'ConstraintError'
+      );
+    }
+
+    txn._ensureSavepoint();
+
+    const oldName = this._name;
+
+    // Update in SQLite
+    txn._db._backend.renameObjectStore(txn._db._name, oldName, newName);
+
+    // Update in-memory state
+    this._name = newName;
+
+    // Update transaction's object store cache
+    txn._objectStoreCache.delete(oldName);
+    txn._objectStoreCache.set(newName, this);
+
+    // Update transaction's store names and objectStoreNames
+    const idx = txn._storeNames.indexOf(oldName);
+    if (idx !== -1) {
+      txn._storeNames[idx] = newName;
+      txn._storeNames.sort();
+    }
+    txn._objectStoreNames = new DOMStringList(txn._storeNames);
+
+    // Invalidate database's objectStoreNames cache
+    txn._db._objectStoreNamesCache = null;
+
+    // Track rename for abort revert
+    if (!txn._renamedStores) {
+      txn._renamedStores = [];
+    }
+    txn._renamedStores.push({ store: this, oldName, newName });
   }
 
   get keyPath(): string | string[] | null {

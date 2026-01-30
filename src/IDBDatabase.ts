@@ -74,12 +74,16 @@ export class IDBDatabase extends EventTarget {
   }
 
   createObjectStore(name: string, options?: { keyPath?: string | string[] | null; autoIncrement?: boolean }): IDBObjectStore {
-    if (!this._upgradeTransaction) {
+    // Per spec exception ordering:
+    // 1. InvalidStateError if not running an upgrade transaction
+    //    A transaction that is 'finished' is no longer "running"
+    if (!this._upgradeTransaction || this._upgradeTransaction._state === 'finished') {
       throw new DOMException(
         "Failed to execute 'createObjectStore' on 'IDBDatabase': The database is not running a version change transaction.",
         'InvalidStateError'
       );
     }
+    // 2. TransactionInactiveError if the transaction is not active (e.g., aborted but not yet finished)
     if (this._upgradeTransaction._state !== 'active') {
       throw new DOMException(
         "Failed to execute 'createObjectStore' on 'IDBDatabase': The transaction is not active.",
@@ -87,23 +91,23 @@ export class IDBDatabase extends EventTarget {
       );
     }
 
-    // Check for duplicate store name
+    const keyPath = options?.keyPath !== undefined ? options.keyPath : null;
+    const autoIncrement = options?.autoIncrement ?? false;
+
+    // 3. SyntaxError for invalid key path (before ConstraintError per spec)
+    if (keyPath !== null && keyPath !== undefined && !isValidKeyPath(keyPath)) {
+      throw new DOMException(
+        "The keyPath argument contains an invalid key path.",
+        'SyntaxError'
+      );
+    }
+
+    // 4. ConstraintError for duplicate store name
     const existingNames = this._backend.getObjectStoreNames(this._name);
     if (existingNames.includes(name)) {
       throw new DOMException(
         `An object store with the name '${name}' already exists.`,
         'ConstraintError'
-      );
-    }
-
-    const keyPath = options?.keyPath !== undefined ? options.keyPath : null;
-    const autoIncrement = options?.autoIncrement ?? false;
-
-    // Validate key path
-    if (keyPath !== null && keyPath !== undefined && !isValidKeyPath(keyPath)) {
-      throw new DOMException(
-        "The keyPath argument contains an invalid key path.",
-        'SyntaxError'
       );
     }
 
@@ -145,12 +149,14 @@ export class IDBDatabase extends EventTarget {
   }
 
   deleteObjectStore(name: string): void {
-    if (!this._upgradeTransaction) {
+    // Per spec: InvalidStateError if not running an upgrade transaction
+    if (!this._upgradeTransaction || this._upgradeTransaction._state === 'finished') {
       throw new DOMException(
         "Failed to execute 'deleteObjectStore' on 'IDBDatabase': The database is not running a version change transaction.",
         'InvalidStateError'
       );
     }
+    // TransactionInactiveError if the transaction is not active
     if (this._upgradeTransaction._state !== 'active') {
       throw new DOMException(
         "Failed to execute 'deleteObjectStore' on 'IDBDatabase': The transaction is not active.",
@@ -230,11 +236,7 @@ export class IDBDatabase extends EventTarget {
       );
     }
 
-    mode = mode || 'readonly';
-    if (mode !== 'readonly' && mode !== 'readwrite') {
-      throw new TypeError(`Invalid transaction mode: ${mode}`);
-    }
-
+    // Per spec: NotFoundError (store names check) before TypeError (invalid mode)
     // Verify all store names exist
     const existingNames = this._backend.getObjectStoreNames(this._name);
     for (const name of storeNames) {
@@ -244,6 +246,11 @@ export class IDBDatabase extends EventTarget {
           'NotFoundError'
         );
       }
+    }
+
+    mode = mode || 'readonly';
+    if (mode !== 'readonly' && mode !== 'readwrite') {
+      throw new TypeError(`Invalid transaction mode: ${mode}`);
     }
 
     const txn = new IDBTransaction(this, storeNames, mode);

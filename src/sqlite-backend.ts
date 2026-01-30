@@ -538,6 +538,18 @@ export class SQLiteBackend {
     return row ?? null;
   }
 
+  /** Rename an object store */
+  renameObjectStore(dbName: string, oldName: string, newName: string): void {
+    const db = this.getDatabase(dbName);
+    db.prepare('UPDATE object_stores SET name = ? WHERE name = ?').run(newName, oldName);
+  }
+
+  /** Rename an index */
+  renameIndex(dbName: string, storeId: number, oldName: string, newName: string): void {
+    const db = this.getDatabase(dbName);
+    db.prepare('UPDATE indexes SET name = ? WHERE object_store_id = ? AND name = ?').run(newName, storeId, oldName);
+  }
+
   /** Close all connections */
   closeAll(): void {
     for (const [name, db] of this._openDbs) {

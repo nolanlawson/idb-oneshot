@@ -134,6 +134,14 @@ export class IDBCursor {
   }
 
   advance(count: number): void {
+    // Per spec, TypeError for invalid count precedes TransactionInactiveError
+    if (count === 0) {
+      throw new TypeError("Failed to execute 'advance' on 'IDBCursor': A count argument with value 0 (zero) was specified, must be greater than 0.");
+    }
+    if (count < 0 || !Number.isFinite(count)) {
+      throw new TypeError("Failed to execute 'advance' on 'IDBCursor': Value is not of type 'unsigned long'.");
+    }
+
     const txn = this._state.transaction;
     if (txn._state !== 'active') {
       throw new DOMException(
@@ -153,13 +161,6 @@ export class IDBCursor {
         "Failed to execute 'advance' on 'IDBCursor': The cursor is being iterated or has already been iterated past its end.",
         'InvalidStateError'
       );
-    }
-
-    if (count === 0) {
-      throw new TypeError("Failed to execute 'advance' on 'IDBCursor': A count argument with value 0 (zero) was specified, must be greater than 0.");
-    }
-    if (count < 0 || !Number.isFinite(count)) {
-      throw new TypeError("Failed to execute 'advance' on 'IDBCursor': Value is not of type 'unsigned long'.");
     }
 
     this._continueCalled = true;
@@ -255,6 +256,8 @@ export class IDBCursor {
         'TransactionInactiveError'
       );
     }
+    // Per spec: deleted source check precedes InvalidAccessError checks
+    this._ensureSourceValid();
     if (this._state.sourceType !== 'index') {
       throw new DOMException(
         "Failed to execute 'continuePrimaryKey' on 'IDBCursor': continuePrimaryKey requires an index source.",

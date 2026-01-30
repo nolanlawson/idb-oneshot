@@ -50,9 +50,82 @@ export class IDBIndex {
     return this._name;
   }
 
-  set name(_value: string) {
-    // Rename - Phase 8
-    throw new DOMException('Not yet implemented', 'InvalidStateError');
+  set name(newName: string) {
+    const txn = this._objectStore._transaction;
+
+    // Per spec exception ordering:
+    // 1. InvalidStateError if not in a versionchange transaction
+    if (txn._mode !== 'versionchange') {
+      throw new DOMException(
+        "Failed to set the 'name' property on 'IDBIndex': The database is not running a version change transaction.",
+        'InvalidStateError'
+      );
+    }
+
+    // 2. InvalidStateError if the index has been deleted
+    const isDeletedByAbort = this._createdInTransaction !== null && this._createdInTransaction._aborted;
+    if (this._deleted || isDeletedByAbort) {
+      throw new DOMException(
+        "Failed to set the 'name' property on 'IDBIndex': The index has been deleted.",
+        'InvalidStateError'
+      );
+    }
+
+    // 3. TransactionInactiveError if transaction is not active
+    if (txn._state !== 'active') {
+      throw new DOMException(
+        "Failed to set the 'name' property on 'IDBIndex': The transaction is not active.",
+        'TransactionInactiveError'
+      );
+    }
+
+    // Stringify the name (may throw if toString() throws)
+    newName = String(newName);
+
+    // If same name, no-op
+    if (newName === this._name) {
+      return;
+    }
+
+    // 4. ConstraintError if another index on the same store already has this name
+    const existingNames = txn._db._backend.getIndexNames(
+      txn._db._name,
+      this._objectStore._storeId
+    );
+    if (existingNames.includes(newName)) {
+      throw new DOMException(
+        `An index with the name '${newName}' already exists.`,
+        'ConstraintError'
+      );
+    }
+
+    txn._ensureSavepoint();
+
+    const oldName = this._name;
+
+    // Update in SQLite
+    txn._db._backend.renameIndex(
+      txn._db._name,
+      this._objectStore._storeId,
+      oldName,
+      newName
+    );
+
+    // Update in-memory state
+    this._name = newName;
+
+    // Update object store's index cache
+    this._objectStore._indexCache.delete(oldName);
+    this._objectStore._indexCache.set(newName, this);
+
+    // Invalidate index names cache
+    this._objectStore._indexNamesCache = null;
+
+    // Track rename for abort revert
+    if (!txn._renamedIndexes) {
+      txn._renamedIndexes = [];
+    }
+    txn._renamedIndexes.push({ index: this, store: this._objectStore, oldName, newName });
   }
 
   get objectStore(): any {
