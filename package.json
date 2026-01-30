@@ -1,0 +1,19 @@
+{
+  "name": "indexeddb-sqlite",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test:wpt": "node --experimental-strip-types test/run-all.ts",
+    "test:wpt:single": "node --experimental-strip-types test/wpt-runner.ts",
+    "test:unit": "node --test test/unit/"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "typescript": "^5.7.0"
+  }
+}
