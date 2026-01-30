@@ -13,5 +13,6 @@ export { IDBTransaction } from './IDBTransaction.ts';
 export { IDBObjectStore } from './IDBObjectStore.ts';
 export { IDBIndex } from './IDBIndex.ts';
 export { IDBCursor, IDBCursorWithValue } from './IDBCursor.ts';
+export { IDBRecord } from './IDBRecord.ts';
 export { IDBVersionChangeEvent } from './IDBVersionChangeEvent.ts';
 export { DOMStringList } from './DOMStringList.ts';

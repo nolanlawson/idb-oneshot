@@ -203,7 +203,7 @@ Uses SQLite `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for abort semantics.
 ### Phase 8: Exception Ordering + Rename ✅
 **Target tests**: `idb*-exception-order.any.js` (15 files), `idbobjectstore-rename-*.any.js` (3 files), `idbindex-rename-*.any.js` (2 files)
 
-### Phase 9: getAll / getAllKeys / getAllRecords
+### Phase 9: getAll / getAllKeys / getAllRecords ✅
 **Target tests**: `idbobjectstore_getAll.any.js`, `idbobjectstore_getAllKeys.any.js`, `idbobjectstore_getAll-options.any.js`, `idbobjectstore_getAllKeys-options.any.js`, `idbobjectstore_getAllRecords.any.js`, `idbindex_getAll.any.js`, `idbindex_getAllKeys.any.js`, `idbindex_getAll-options.any.js`, `idbindex_getAllKeys-options.any.js`, `idbindex_getAllRecords.any.js`, `*-enforcerange.any.js` (4 files)
 
 ### Phase 10: Structured Clone + Key Generator + Key Path Edge Cases

@@ -14,6 +14,7 @@ import {
   IDBIndex,
   IDBCursor,
   IDBCursorWithValue,
+  IDBRecord,
   IDBVersionChangeEvent,
   DOMStringList,
 } from '../src/index.ts';
@@ -80,6 +81,7 @@ export function injectIndexedDB(storagePath: string): void {
   (globalThis as any).IDBIndex = IDBIndex;
   (globalThis as any).IDBCursor = IDBCursor;
   (globalThis as any).IDBCursorWithValue = IDBCursorWithValue;
+  (globalThis as any).IDBRecord = IDBRecord;
   (globalThis as any).IDBVersionChangeEvent = IDBVersionChangeEvent;
   (globalThis as any).DOMStringList = DOMStringList;
 }

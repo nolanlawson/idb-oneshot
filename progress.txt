@@ -403,4 +403,63 @@ Phase 8: Exception Ordering + Rename — COMPLETE
   - Overall WPT pass rate: 739/1077 subtests (68.6%), up from 702/1077 (65.2%)
   - npx tsc --noEmit passes clean
 
-Next: Phase 9 — getAll / getAllKeys / getAllRecords
+Phase 9: getAll / getAllKeys / getAllRecords — COMPLETE
+  - Created src/IDBRecord.ts:
+    - IDBRecord class with getter-based key/primaryKey/value properties (IDL attribute pattern)
+    - Symbol.toStringTag returns 'IDBRecord' for assert_class_string compatibility
+  - Implemented IDBObjectStore.getAll(queryOrOptions?, count?):
+    - Supports both positional (query, count) and dictionary (IDBGetAllOptions) overloads
+    - Returns array of deserialized values matching query with optional count limit
+    - Direction support (next/prev/nextunique/prevunique) for dictionary overload
+  - Implemented IDBObjectStore.getAllKeys(queryOrOptions?, count?):
+    - Same overload support as getAll, returns decoded primary keys
+  - Implemented IDBObjectStore.getAllRecords(options?):
+    - Returns array of IDBRecord objects with key, primaryKey, value
+    - Supports query, count, and direction options
+  - Implemented IDBIndex.getAll(queryOrOptions?, count?):
+    - Queries index entries, returns record values
+    - Unique direction deduplication (nextunique/prevunique)
+  - Implemented IDBIndex.getAllKeys(queryOrOptions?, count?):
+    - Returns primary keys from index entries
+    - Unique direction deduplication
+  - Implemented IDBIndex.getAllRecords(options?):
+    - Returns IDBRecord objects with index key, primary key, value
+    - Full direction and deduplication support
+  - Added [EnforceRange] count validation:
+    - enforceRangeCount() rejects NaN, Infinity, -Infinity, negative values
+    - Converts to unsigned 32-bit integer via >>> 0
+  - Added parseGetAllArgs() helper:
+    - Detects dictionary vs positional overload based on getAllRecords presence
+    - Extracts query, count, direction from either form
+  - Added SQLiteBackend bulk retrieval methods:
+    - getAllRecords(): object store records with range, direction, optional LIMIT
+    - getAllIndexEntries(): index entries with JOIN, range, direction, optional LIMIT
+  - Updated barrel export (src/index.ts) and test harness (test/wpt-harness-setup.ts):
+    - Exports and injects IDBRecord as global
+  - WPT results (205/223 Phase 9 subtests passing, 91.9%):
+    Object store tests:
+    - idbobjectstore_getAll.any.js: 15/18 PASS (3 fail: large values, commit, detached buffer)
+    - idbobjectstore_getAllKeys.any.js: 15/16 PASS (1 fail: detached buffer)
+    - idbobjectstore_getAll-options.any.js: 22/24 PASS (2 fail: large values, detached buffer)
+    - idbobjectstore_getAllKeys-options.any.js: 22/23 PASS (1 fail: detached buffer)
+    - idbobjectstore_getAllRecords.any.js: 22/25 PASS (3 fail: large values, commit, detached buffer)
+    - idbobjectstore-getAll-enforcerange.any.js: 1/1 PASS
+    - idbobjectstore-getAllKeys-enforcerange.any.js: 1/1 PASS
+    Index tests:
+    - idbindex_getAll.any.js: 17/19 PASS (2 fail: large values, detached buffer)
+    - idbindex_getAllKeys.any.js: 17/18 PASS (1 fail: detached buffer)
+    - idbindex_getAll-options.any.js: 24/26 PASS (2 fail: large values, detached buffer)
+    - idbindex_getAllKeys-options.any.js: 24/25 PASS (1 fail: detached buffer)
+    - idbindex_getAllRecords.any.js: 23/25 PASS (2 fail: large values, detached buffer)
+    - idbindex-getAll-enforcerange.any.js: 1/1 PASS
+    - idbindex-getAllKeys-enforcerange.any.js: 1/1 PASS
+  - Remaining failures are cross-cutting issues:
+    - "large values": Array type not preserved by JSON serialization (Phase 10 structured clone)
+    - "detached TypedArray/ArrayBuffer": detached buffer detection (Phase 10)
+    - "transaction.commit()": explicit commit before request completion (Phase 12)
+  - Bonus improvements:
+    - idbobjectstore-query-exception-order.any.js: 12/12 PASS (was 10/12, getAll/getAllKeys now implemented)
+  - No regressions in previously passing tests
+  - npx tsc --noEmit passes clean
+
+Next: Phase 10 — Structured Clone + Key Generator + Key Path Edge Cases

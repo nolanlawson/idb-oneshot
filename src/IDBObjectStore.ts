@@ -4,6 +4,7 @@ import { DOMStringList } from './DOMStringList.ts';
 import { openObjectStoreCursor } from './IDBCursor.ts';
 import { IDBIndex } from './IDBIndex.ts';
 import { IDBKeyRange } from './IDBKeyRange.ts';
+import { IDBRecord } from './IDBRecord.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { encodeKey, valueToKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
 import type { IDBValidKey } from './types.ts';
@@ -26,6 +27,82 @@ export function isValidKeyPath(keyPath: string | string[] | null): boolean {
   }
   if (typeof keyPath !== 'string') return false;
   return isValidKeyPathString(keyPath);
+}
+
+/**
+ * Validate a count parameter per WebIDL [EnforceRange] for unsigned long.
+ * Returns undefined if no count (meaning "all"), or a valid unsigned long.
+ */
+function enforceRangeCount(count: any): number | undefined {
+  if (count === undefined) return undefined;
+  const n = Number(count);
+  if (!Number.isFinite(n) || n < 0 || n > 4294967295 || Number.isNaN(n)) {
+    throw new TypeError(
+      `Failed to execute 'getAll' on 'IDBObjectStore': Value is outside the 'unsigned long' value range.`
+    );
+  }
+  return n >>> 0; // Convert to unsigned 32-bit integer
+}
+
+/**
+ * Parse a query that could be a key, IDBKeyRange, or an options dictionary with {query, count, direction}.
+ * Returns { lower, upper, lowerOpen, upperOpen, count, direction } for range queries,
+ * or { exact, count, direction } for exact key queries.
+ */
+function parseGetAllArgs(
+  queryOrOptions: any,
+  countArg?: any,
+  supportDictionary: boolean = false
+): {
+  lower: Uint8Array | null;
+  upper: Uint8Array | null;
+  lowerOpen: boolean;
+  upperOpen: boolean;
+  count: number | undefined;
+  direction: string;
+} {
+  let query: any = undefined;
+  let count: number | undefined;
+  let direction: string = 'next';
+
+  // Check if first arg is an options dictionary (has getAllRecords support)
+  if (supportDictionary && queryOrOptions !== null && queryOrOptions !== undefined &&
+      typeof queryOrOptions === 'object' && !(queryOrOptions instanceof IDBKeyRange) &&
+      !Array.isArray(queryOrOptions) && !(queryOrOptions instanceof ArrayBuffer) &&
+      !ArrayBuffer.isView(queryOrOptions) && !(queryOrOptions instanceof Date)) {
+    // Options dictionary
+    query = queryOrOptions.query;
+    count = enforceRangeCount(queryOrOptions.count);
+    if (queryOrOptions.direction !== undefined) {
+      direction = queryOrOptions.direction;
+    }
+  } else {
+    query = queryOrOptions;
+    count = enforceRangeCount(countArg);
+  }
+
+  let lower: Uint8Array | null = null;
+  let upper: Uint8Array | null = null;
+  let lowerOpen = false;
+  let upperOpen = false;
+
+  if (query !== undefined && query !== null) {
+    if (query instanceof IDBKeyRange) {
+      lower = query.lower !== undefined ? encodeKey(query.lower) : null;
+      upper = query.upper !== undefined ? encodeKey(query.upper) : null;
+      lowerOpen = query.lowerOpen;
+      upperOpen = query.upperOpen;
+    } else {
+      const key = valueToKeyOrThrow(query);
+      const encoded = encodeKey(key);
+      lower = encoded;
+      upper = encoded;
+      lowerOpen = false;
+      upperOpen = false;
+    }
+  }
+
+  return { lower, upper, lowerOpen, upperOpen, count, direction };
 }
 
 /**
@@ -752,12 +829,132 @@ export class IDBObjectStore {
     return idx;
   }
 
-  getAll(_query?: any, _count?: number): IDBRequest {
-    throw new DOMException('Not yet implemented', 'InvalidStateError');
+  getAll(queryOrOptions?: any, count?: number): IDBRequest {
+    this._ensureValid();
+
+    // Detect dictionary overload: if queryOrOptions is a plain object with getAllRecords support
+    const hasDictSupport = typeof this.getAllRecords === 'function';
+    const parsed = parseGetAllArgs(queryOrOptions, count, hasDictSupport);
+
+    const request = this._transaction._createRequest(this);
+    const store = this;
+    const storeId = this._storeId;
+
+    this._transaction._queueOperation(
+      () => {
+        const direction = (parsed.direction as any) || 'next';
+        const rows = store._transaction._db._backend.getAllRecords(
+          store._transaction._db._name,
+          storeId,
+          parsed.lower,
+          parsed.upper,
+          parsed.lowerOpen,
+          parsed.upperOpen,
+          direction,
+          (parsed.count !== undefined && parsed.count > 0) ? parsed.count : undefined
+        );
+        const results: any[] = [];
+        for (const row of rows) {
+          results.push(JSON.parse(row.value.toString()));
+        }
+        request._readyState = 'done';
+        request._result = results;
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
+      }
+    );
+
+    return request;
   }
 
-  getAllKeys(_query?: any, _count?: number): IDBRequest {
-    throw new DOMException('Not yet implemented', 'InvalidStateError');
+  getAllKeys(queryOrOptions?: any, count?: number): IDBRequest {
+    this._ensureValid();
+
+    const hasDictSupport = typeof this.getAllRecords === 'function';
+    const parsed = parseGetAllArgs(queryOrOptions, count, hasDictSupport);
+
+    const request = this._transaction._createRequest(this);
+    const store = this;
+    const storeId = this._storeId;
+
+    this._transaction._queueOperation(
+      () => {
+        const direction = (parsed.direction as any) || 'next';
+        const rows = store._transaction._db._backend.getAllRecords(
+          store._transaction._db._name,
+          storeId,
+          parsed.lower,
+          parsed.upper,
+          parsed.lowerOpen,
+          parsed.upperOpen,
+          direction,
+          (parsed.count !== undefined && parsed.count > 0) ? parsed.count : undefined
+        );
+        const results: any[] = [];
+        for (const row of rows) {
+          results.push(decodeKey(row.key));
+        }
+        request._readyState = 'done';
+        request._result = results;
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
+      }
+    );
+
+    return request;
+  }
+
+  getAllRecords(options?: any): IDBRequest {
+    this._ensureValid();
+
+    const parsed = parseGetAllArgs(options, undefined, true);
+
+    const request = this._transaction._createRequest(this);
+    const store = this;
+    const storeId = this._storeId;
+
+    this._transaction._queueOperation(
+      () => {
+        const direction = (parsed.direction as any) || 'next';
+        const rows = store._transaction._db._backend.getAllRecords(
+          store._transaction._db._name,
+          storeId,
+          parsed.lower,
+          parsed.upper,
+          parsed.lowerOpen,
+          parsed.upperOpen,
+          direction,
+          (parsed.count !== undefined && parsed.count > 0) ? parsed.count : undefined
+        );
+        const results: any[] = [];
+        for (const row of rows) {
+          const key = decodeKey(row.key);
+          const value = JSON.parse(row.value.toString());
+          results.push(new IDBRecord(key, key, value));
+        }
+        request._readyState = 'done';
+        request._result = results;
+      },
+      () => {
+        store._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        store._transaction._deactivate();
+        store._transaction._requestFinished();
+      }
+    );
+
+    return request;
   }
 
   private _ensureValid(): void {

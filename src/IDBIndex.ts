@@ -2,11 +2,83 @@
 
 import { openIndexCursor } from './IDBCursor.ts';
 import { IDBKeyRange } from './IDBKeyRange.ts';
+import { IDBRecord } from './IDBRecord.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { encodeKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
 import type { IDBValidKey } from './types.ts';
 
 const decodeKeyFromBuffer = decodeKey;
+
+/**
+ * Validate a count parameter per WebIDL [EnforceRange] for unsigned long.
+ */
+function enforceRangeCount(count: any): number | undefined {
+  if (count === undefined) return undefined;
+  const n = Number(count);
+  if (!Number.isFinite(n) || n < 0 || n > 4294967295 || Number.isNaN(n)) {
+    throw new TypeError(
+      `Failed to execute 'getAll' on 'IDBIndex': Value is outside the 'unsigned long' value range.`
+    );
+  }
+  return n >>> 0;
+}
+
+/**
+ * Parse getAll/getAllKeys/getAllRecords arguments.
+ */
+function parseGetAllArgs(
+  queryOrOptions: any,
+  countArg?: any,
+  supportDictionary: boolean = false
+): {
+  lower: Uint8Array | null;
+  upper: Uint8Array | null;
+  lowerOpen: boolean;
+  upperOpen: boolean;
+  count: number | undefined;
+  direction: string;
+} {
+  let query: any = undefined;
+  let count: number | undefined;
+  let direction: string = 'next';
+
+  if (supportDictionary && queryOrOptions !== null && queryOrOptions !== undefined &&
+      typeof queryOrOptions === 'object' && !(queryOrOptions instanceof IDBKeyRange) &&
+      !Array.isArray(queryOrOptions) && !(queryOrOptions instanceof ArrayBuffer) &&
+      !ArrayBuffer.isView(queryOrOptions) && !(queryOrOptions instanceof Date)) {
+    query = queryOrOptions.query;
+    count = enforceRangeCount(queryOrOptions.count);
+    if (queryOrOptions.direction !== undefined) {
+      direction = queryOrOptions.direction;
+    }
+  } else {
+    query = queryOrOptions;
+    count = enforceRangeCount(countArg);
+  }
+
+  let lower: Uint8Array | null = null;
+  let upper: Uint8Array | null = null;
+  let lowerOpen = false;
+  let upperOpen = false;
+
+  if (query !== undefined && query !== null) {
+    if (query instanceof IDBKeyRange) {
+      lower = query.lower !== undefined ? encodeKey(query.lower) : null;
+      upper = query.upper !== undefined ? encodeKey(query.upper) : null;
+      lowerOpen = query.lowerOpen;
+      upperOpen = query.upperOpen;
+    } else {
+      const key = valueToKeyOrThrow(query);
+      const encoded = encodeKey(key);
+      lower = encoded;
+      upper = encoded;
+      lowerOpen = false;
+      upperOpen = false;
+    }
+  }
+
+  return { lower, upper, lowerOpen, upperOpen, count, direction };
+}
 
 /**
  * Convert a query parameter to either an exact key or key range for index queries.
@@ -323,37 +395,179 @@ export class IDBIndex {
     return request;
   }
 
-  getAll(_query?: any, _count?: number): IDBRequest {
+  getAll(queryOrOptions?: any, count?: number): IDBRequest {
     this._ensureValid();
+
+    const hasDictSupport = typeof this.getAllRecords === 'function';
+    const parsed = parseGetAllArgs(queryOrOptions, count, hasDictSupport);
+
     const request = this._transaction._createRequest(this);
     const idx = this;
-    // Stub - Phase 9
-    request._readyState = 'done';
-    request._result = [];
-    this._transaction._queueRequestCallback(() => {
-      idx._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      idx._transaction._deactivate();
-      idx._transaction._requestFinished();
-    });
+
+    this._transaction._queueOperation(
+      () => {
+        const direction = (parsed.direction as any) || 'next';
+        const storeId = idx._objectStore._storeId;
+        const rows = idx._backend.getAllIndexEntries(
+          idx._dbName,
+          idx._indexId,
+          storeId,
+          parsed.lower,
+          parsed.upper,
+          parsed.lowerOpen,
+          parsed.upperOpen,
+          direction,
+          // For unique directions, we don't limit at SQL level
+          (parsed.count !== undefined && parsed.count > 0 &&
+           direction !== 'nextunique' && direction !== 'prevunique')
+            ? parsed.count : undefined
+        );
+        const results: any[] = [];
+        // Apply unique filtering if needed
+        let filteredRows = rows;
+        if (direction === 'nextunique' || direction === 'prevunique') {
+          const seen = new Set<string>();
+          filteredRows = [];
+          for (const row of rows) {
+            const keyHex = Buffer.from(row.index_key).toString('hex');
+            if (!seen.has(keyHex)) {
+              seen.add(keyHex);
+              filteredRows.push(row);
+            }
+          }
+        }
+        const limit = (parsed.count !== undefined && parsed.count > 0) ? parsed.count : filteredRows.length;
+        for (let i = 0; i < Math.min(limit, filteredRows.length); i++) {
+          results.push(JSON.parse(filteredRows[i].value.toString()));
+        }
+        request._readyState = 'done';
+        request._result = results;
+      },
+      () => {
+        idx._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        idx._transaction._deactivate();
+        idx._transaction._requestFinished();
+      }
+    );
+
     return request;
   }
 
-  getAllKeys(_query?: any, _count?: number): IDBRequest {
+  getAllKeys(queryOrOptions?: any, count?: number): IDBRequest {
     this._ensureValid();
+
+    const hasDictSupport = typeof this.getAllRecords === 'function';
+    const parsed = parseGetAllArgs(queryOrOptions, count, hasDictSupport);
+
     const request = this._transaction._createRequest(this);
     const idx = this;
-    // Stub - Phase 9
-    request._readyState = 'done';
-    request._result = [];
-    this._transaction._queueRequestCallback(() => {
-      idx._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      idx._transaction._deactivate();
-      idx._transaction._requestFinished();
-    });
+
+    this._transaction._queueOperation(
+      () => {
+        const direction = (parsed.direction as any) || 'next';
+        const storeId = idx._objectStore._storeId;
+        const rows = idx._backend.getAllIndexEntries(
+          idx._dbName,
+          idx._indexId,
+          storeId,
+          parsed.lower,
+          parsed.upper,
+          parsed.lowerOpen,
+          parsed.upperOpen,
+          direction,
+          (parsed.count !== undefined && parsed.count > 0 &&
+           direction !== 'nextunique' && direction !== 'prevunique')
+            ? parsed.count : undefined
+        );
+        const results: any[] = [];
+        let filteredRows = rows;
+        if (direction === 'nextunique' || direction === 'prevunique') {
+          const seen = new Set<string>();
+          filteredRows = [];
+          for (const row of rows) {
+            const keyHex = Buffer.from(row.index_key).toString('hex');
+            if (!seen.has(keyHex)) {
+              seen.add(keyHex);
+              filteredRows.push(row);
+            }
+          }
+        }
+        const limit = (parsed.count !== undefined && parsed.count > 0) ? parsed.count : filteredRows.length;
+        for (let i = 0; i < Math.min(limit, filteredRows.length); i++) {
+          results.push(decodeKeyFromBuffer(filteredRows[i].primary_key));
+        }
+        request._readyState = 'done';
+        request._result = results;
+      },
+      () => {
+        idx._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        idx._transaction._deactivate();
+        idx._transaction._requestFinished();
+      }
+    );
+
+    return request;
+  }
+
+  getAllRecords(options?: any): IDBRequest {
+    this._ensureValid();
+
+    const parsed = parseGetAllArgs(options, undefined, true);
+
+    const request = this._transaction._createRequest(this);
+    const idx = this;
+
+    this._transaction._queueOperation(
+      () => {
+        const direction = (parsed.direction as any) || 'next';
+        const storeId = idx._objectStore._storeId;
+        const rows = idx._backend.getAllIndexEntries(
+          idx._dbName,
+          idx._indexId,
+          storeId,
+          parsed.lower,
+          parsed.upper,
+          parsed.lowerOpen,
+          parsed.upperOpen,
+          direction
+        );
+        const results: any[] = [];
+        let filteredRows = rows;
+        if (direction === 'nextunique' || direction === 'prevunique') {
+          const seen = new Set<string>();
+          filteredRows = [];
+          for (const row of rows) {
+            const keyHex = Buffer.from(row.index_key).toString('hex');
+            if (!seen.has(keyHex)) {
+              seen.add(keyHex);
+              filteredRows.push(row);
+            }
+          }
+        }
+        const limit = (parsed.count !== undefined && parsed.count > 0) ? parsed.count : filteredRows.length;
+        for (let i = 0; i < Math.min(limit, filteredRows.length); i++) {
+          const row = filteredRows[i];
+          const key = decodeKeyFromBuffer(row.index_key);
+          const primaryKey = decodeKeyFromBuffer(row.primary_key);
+          const value = JSON.parse(row.value.toString());
+          results.push(new IDBRecord(key, primaryKey, value));
+        }
+        request._readyState = 'done';
+        request._result = results;
+      },
+      () => {
+        idx._transaction._state = 'active';
+        const event = new Event('success', { bubbles: false, cancelable: false });
+        request.dispatchEvent(event);
+        idx._transaction._deactivate();
+        idx._transaction._requestFinished();
+      }
+    );
+
     return request;
   }
 

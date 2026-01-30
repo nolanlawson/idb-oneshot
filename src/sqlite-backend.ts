@@ -538,6 +538,74 @@ export class SQLiteBackend {
     return row ?? null;
   }
 
+  /** Get all records from an object store within a range, with optional count limit */
+  getAllRecords(
+    dbName: string,
+    storeId: number,
+    lower: Buffer | Uint8Array | null,
+    upper: Buffer | Uint8Array | null,
+    lowerOpen: boolean,
+    upperOpen: boolean,
+    direction: 'next' | 'prev' | 'nextunique' | 'prevunique',
+    maxCount?: number
+  ): Array<{ key: Buffer; value: Buffer }> {
+    const db = this.getDatabase(dbName);
+    const { sql, params } = this._buildRangeQuery(
+      'SELECT key, value FROM records',
+      storeId, lower, upper, lowerOpen, upperOpen
+    );
+    const order = (direction === 'prev' || direction === 'prevunique') ? 'DESC' : 'ASC';
+    let fullSql = sql + ` ORDER BY key ${order}`;
+    if (maxCount !== undefined && maxCount > 0) {
+      fullSql += ` LIMIT ${maxCount}`;
+    }
+    return db.prepare(fullSql).all(...params) as Array<{ key: Buffer; value: Buffer }>;
+  }
+
+  /** Get all index entries within a range, with optional count limit */
+  getAllIndexEntries(
+    dbName: string,
+    indexId: number,
+    storeId: number,
+    lower: Buffer | Uint8Array | null,
+    upper: Buffer | Uint8Array | null,
+    lowerOpen: boolean,
+    upperOpen: boolean,
+    direction: 'next' | 'prev' | 'nextunique' | 'prevunique',
+    maxCount?: number
+  ): Array<{ index_key: Buffer; primary_key: Buffer; value: Buffer }> {
+    const db = this.getDatabase(dbName);
+    const conditions: string[] = ['ie.index_id = ?'];
+    const params: any[] = [storeId, indexId];
+    if (lower !== null) {
+      conditions.push(lowerOpen ? 'ie.key > ?' : 'ie.key >= ?');
+      params.push(Buffer.from(lower));
+    }
+    if (upper !== null) {
+      conditions.push(upperOpen ? 'ie.key < ?' : 'ie.key <= ?');
+      params.push(Buffer.from(upper));
+    }
+    let order: string;
+    if (direction === 'prev') {
+      order = 'ie.key DESC, ie.primary_key DESC';
+    } else if (direction === 'prevunique') {
+      order = 'ie.key DESC, ie.primary_key ASC';
+    } else {
+      order = 'ie.key ASC, ie.primary_key ASC';
+    }
+    let sql = 'SELECT ie.key as index_key, ie.primary_key, r.value FROM index_entries ie ' +
+      'JOIN records r ON r.object_store_id = ? AND r.key = ie.primary_key ' +
+      'WHERE ' + conditions.join(' AND ') + ` ORDER BY ${order}`;
+    if (maxCount !== undefined && maxCount > 0) {
+      // For unique directions, we can't just LIMIT since we need to deduplicate first
+      // So we fetch all and let the caller handle dedup + limit
+      if (direction !== 'nextunique' && direction !== 'prevunique') {
+        sql += ` LIMIT ${maxCount}`;
+      }
+    }
+    return db.prepare(sql).all(...params) as Array<{ index_key: Buffer; primary_key: Buffer; value: Buffer }>;
+  }
+
   /** Rename an object store */
   renameObjectStore(dbName: string, oldName: string, newName: string): void {
     const db = this.getDatabase(dbName);
