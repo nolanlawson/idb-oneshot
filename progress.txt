@@ -1,0 +1,33 @@
+Phase 0: Project Scaffolding — COMPLETE
+  - Created package.json (type: "module", better-sqlite3 + typescript deps)
+  - Created tsconfig.json (strict, NodeNext, allowImportingTsExtensions)
+  - Created CLAUDE.md with project conventions and commands
+  - Created empty src/index.ts barrel export
+  - Created .gitignore (node_modules, manifest, sqlite files)
+  - Created test/wpt-harness-setup.ts (browser global shims for Node)
+  - Created test/wpt-subprocess.ts (child process entry that loads testharness.js + test)
+  - Created test/wpt-runner.ts (forks subprocess, parses JSON results, reports per-subtest)
+  - Created test/run-all.ts (runs all .any.js files, generates manifest)
+  - Verified: runner executes idbkeyrange.any.js, detects 10 subtests (all fail as expected - IDBKeyRange not yet implemented)
+  - Verified: npx tsc --noEmit passes clean
+
+Phase 1: IDBKeyRange + Key Validation + IDBFactory.cmp() — COMPLETE
+  - Created src/types.ts (IDBKey, IDBValidKey type definitions)
+  - Created src/errors.ts (DOMException helper factories for all IDB error types)
+  - Created src/keys.ts (key validation via valueToKey/valueToKeyOrThrow, cross-type comparison via compareKeys, binary-comparable encoding via encodeKey)
+  - Created src/IDBKeyRange.ts (only, lowerBound, upperBound, bound static methods + includes instance method)
+  - Created src/IDBFactory.ts (cmp method; open/deleteDatabase/databases stubs for Phase 2)
+  - Created src/DOMStringList.ts (length, item, contains, indexed access, Symbol.iterator)
+  - Created stub classes: IDBRequest, IDBOpenDBRequest, IDBDatabase, IDBTransaction, IDBObjectStore, IDBIndex, IDBCursor, IDBCursorWithValue, IDBVersionChangeEvent
+  - Updated src/index.ts barrel export with all classes
+  - Updated test/wpt-harness-setup.ts to inject all IDB globals into test subprocess
+  - WPT results (55/55 subtests passing):
+    - idbkeyrange.any.js: 10/10 PASS
+    - idbkeyrange-includes.any.js: 11/11 PASS
+    - idbkeyrange_incorrect.any.js: 7/7 PASS
+    - idbfactory_cmp.any.js: 12/12 PASS
+    - historical.any.js: 15/15 PASS
+  - key_valid.any.js, key_invalid.any.js, keyorder.any.js deferred to Phase 2 (require indexedDB.open)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 2 — IDBFactory.open() + Database Lifecycle

@@ -3,6 +3,21 @@
  * This must be called before loading testharness.js.
  */
 
+import {
+  IDBFactory,
+  IDBKeyRange,
+  IDBRequest,
+  IDBOpenDBRequest,
+  IDBDatabase,
+  IDBTransaction,
+  IDBObjectStore,
+  IDBIndex,
+  IDBCursor,
+  IDBCursorWithValue,
+  IDBVersionChangeEvent,
+  DOMStringList,
+} from '../src/index.ts';
+
 export function setupGlobals(testFile: string): void {
   // self = globalThis (testharness.js expects `self`)
   (globalThis as any).self = globalThis;
@@ -42,7 +57,20 @@ export function setupGlobals(testFile: string): void {
  * Inject IndexedDB globals from our implementation.
  * Called after the implementation modules are loaded.
  */
-export function injectIndexedDB(_storagePath: string): void {
-  // Will be populated when IDB classes are implemented
-  // For now, set stubs so tests can at least load
+export function injectIndexedDB(storagePath: string): void {
+  const factory = new IDBFactory({ storagePath });
+
+  (globalThis as any).indexedDB = factory;
+  (globalThis as any).IDBFactory = IDBFactory;
+  (globalThis as any).IDBKeyRange = IDBKeyRange;
+  (globalThis as any).IDBRequest = IDBRequest;
+  (globalThis as any).IDBOpenDBRequest = IDBOpenDBRequest;
+  (globalThis as any).IDBDatabase = IDBDatabase;
+  (globalThis as any).IDBTransaction = IDBTransaction;
+  (globalThis as any).IDBObjectStore = IDBObjectStore;
+  (globalThis as any).IDBIndex = IDBIndex;
+  (globalThis as any).IDBCursor = IDBCursor;
+  (globalThis as any).IDBCursorWithValue = IDBCursorWithValue;
+  (globalThis as any).IDBVersionChangeEvent = IDBVersionChangeEvent;
+  (globalThis as any).DOMStringList = DOMStringList;
 }
