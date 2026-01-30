@@ -2,6 +2,7 @@
 // Provides all database storage operations for the IndexedDB implementation
 
 import Database from 'better-sqlite3';
+import type { Statement } from 'better-sqlite3';
 import { mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -42,11 +43,37 @@ CREATE TABLE IF NOT EXISTS index_entries (
 ) WITHOUT ROWID;
 `;
 
+/** Per-database prepared statement cache to avoid re-parsing SQL on every call */
+class StmtCache {
+  private _db: Database.Database;
+  private _cache: Map<string, Statement> = new Map();
+
+  constructor(db: Database.Database) {
+    this._db = db;
+  }
+
+  get(sql: string): Statement {
+    let stmt = this._cache.get(sql);
+    if (!stmt) {
+      stmt = this._db.prepare(sql);
+      this._cache.set(sql, stmt);
+    }
+    return stmt;
+  }
+
+  clear(): void {
+    this._cache.clear();
+  }
+}
+
 export class SQLiteBackend {
   private _storagePath: string;
   private _metaDb: Database.Database;
+  private _metaStmts: StmtCache;
   // Map of open database connections: dbName -> Database.Database
   private _openDbs: Map<string, Database.Database> = new Map();
+  // Map of per-database statement caches
+  private _stmtCaches: Map<string, StmtCache> = new Map();
 
   constructor(storagePath: string) {
     this._storagePath = storagePath;
@@ -56,6 +83,7 @@ export class SQLiteBackend {
     this._metaDb.exec(
       'CREATE TABLE IF NOT EXISTS databases (name TEXT PRIMARY KEY, version INTEGER NOT NULL)'
     );
+    this._metaStmts = new StmtCache(this._metaDb);
   }
 
   /** Get or create a database connection for a named IDB database */
@@ -67,14 +95,22 @@ export class SQLiteBackend {
       db.pragma('journal_mode = WAL');
       db.exec(DB_SCHEMA);
       this._openDbs.set(name, db);
+      this._stmtCaches.set(name, new StmtCache(db));
     }
     return db;
+  }
+
+  /** Get the statement cache for a database (creates connection if needed) */
+  private _stmts(dbName: string): StmtCache {
+    this.getDatabase(dbName); // ensure connection + cache exist
+    return this._stmtCaches.get(dbName)!;
   }
 
   /** Close a specific database connection */
   closeDatabase(name: string): void {
     const db = this._openDbs.get(name);
     if (db) {
+      this._stmtCaches.delete(name);
       db.close();
       this._openDbs.delete(name);
     }
@@ -82,33 +118,31 @@ export class SQLiteBackend {
 
   /** Get the stored version of a database, or 0 if it doesn't exist */
   getDatabaseVersion(name: string): number {
-    const row = this._metaDb
-      .prepare('SELECT version FROM databases WHERE name = ?')
+    const row = this._metaStmts
+      .get('SELECT version FROM databases WHERE name = ?')
       .get(name) as { version: number } | undefined;
     return row ? row.version : 0;
   }
 
   /** Check if a database exists in metadata */
   databaseExists(name: string): boolean {
-    const row = this._metaDb
-      .prepare('SELECT 1 FROM databases WHERE name = ?')
+    const row = this._metaStmts
+      .get('SELECT 1 FROM databases WHERE name = ?')
       .get(name);
     return !!row;
   }
 
   /** Set the version of a database in metadata */
   setDatabaseVersion(name: string, version: number): void {
-    this._metaDb
-      .prepare(
-        'INSERT INTO databases (name, version) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET version = ?'
-      )
+    this._metaStmts
+      .get('INSERT INTO databases (name, version) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET version = ?')
       .run(name, version, version);
   }
 
   /** Delete database metadata and SQLite file */
   deleteDatabaseRecord(name: string): void {
     this.closeDatabase(name);
-    this._metaDb.prepare('DELETE FROM databases WHERE name = ?').run(name);
+    this._metaStmts.get('DELETE FROM databases WHERE name = ?').run(name);
     const dbPath = join(this._storagePath, this._fileNameForDb(name));
     if (existsSync(dbPath)) {
       try {
@@ -128,16 +162,15 @@ export class SQLiteBackend {
 
   /** List all databases */
   listDatabases(): Array<{ name: string; version: number }> {
-    return this._metaDb
-      .prepare('SELECT name, version FROM databases')
+    return this._metaStmts
+      .get('SELECT name, version FROM databases')
       .all() as Array<{ name: string; version: number }>;
   }
 
   /** Get all object store names for a database */
   getObjectStoreNames(dbName: string): string[] {
-    const db = this.getDatabase(dbName);
-    const rows = db
-      .prepare('SELECT name FROM object_stores ORDER BY name')
+    const rows = this._stmts(dbName)
+      .get('SELECT name FROM object_stores ORDER BY name')
       .all() as Array<{ name: string }>;
     return rows.map((r) => r.name);
   }
@@ -149,26 +182,23 @@ export class SQLiteBackend {
     keyPath: string | string[] | null,
     autoIncrement: boolean
   ): number {
-    const db = this.getDatabase(dbName);
-    const result = db
-      .prepare(
-        'INSERT INTO object_stores (name, key_path, auto_increment) VALUES (?, ?, ?)'
-      )
+    const result = this._stmts(dbName)
+      .get('INSERT INTO object_stores (name, key_path, auto_increment) VALUES (?, ?, ?)')
       .run(storeName, keyPath === null ? null : JSON.stringify(keyPath), autoIncrement ? 1 : 0);
     return Number(result.lastInsertRowid);
   }
 
   /** Delete an object store and its records/indexes */
   deleteObjectStore(dbName: string, storeName: string): void {
-    const db = this.getDatabase(dbName);
-    const store = db
-      .prepare('SELECT id FROM object_stores WHERE name = ?')
+    const stmts = this._stmts(dbName);
+    const store = stmts
+      .get('SELECT id FROM object_stores WHERE name = ?')
       .get(storeName) as { id: number } | undefined;
     if (!store) return;
-    db.prepare('DELETE FROM index_entries WHERE index_id IN (SELECT id FROM indexes WHERE object_store_id = ?)').run(store.id);
-    db.prepare('DELETE FROM indexes WHERE object_store_id = ?').run(store.id);
-    db.prepare('DELETE FROM records WHERE object_store_id = ?').run(store.id);
-    db.prepare('DELETE FROM object_stores WHERE id = ?').run(store.id);
+    stmts.get('DELETE FROM index_entries WHERE index_id IN (SELECT id FROM indexes WHERE object_store_id = ?)').run(store.id);
+    stmts.get('DELETE FROM indexes WHERE object_store_id = ?').run(store.id);
+    stmts.get('DELETE FROM records WHERE object_store_id = ?').run(store.id);
+    stmts.get('DELETE FROM object_stores WHERE id = ?').run(store.id);
   }
 
   /** Get object store metadata */
@@ -176,9 +206,8 @@ export class SQLiteBackend {
     dbName: string,
     storeName: string
   ): { id: number; keyPath: string | string[] | null; autoIncrement: boolean; currentKey: number } | null {
-    const db = this.getDatabase(dbName);
-    const row = db
-      .prepare('SELECT id, key_path, auto_increment, current_key FROM object_stores WHERE name = ?')
+    const row = this._stmts(dbName)
+      .get('SELECT id, key_path, auto_increment, current_key FROM object_stores WHERE name = ?')
       .get(storeName) as
       | { id: number; key_path: string | null; auto_increment: number; current_key: number }
       | undefined;
@@ -193,18 +222,16 @@ export class SQLiteBackend {
 
   /** Put a record into an object store */
   putRecord(dbName: string, storeId: number, key: Buffer | Uint8Array, value: Buffer | Uint8Array): void {
-    const db = this.getDatabase(dbName);
-    db.prepare(
-      'INSERT OR REPLACE INTO records (object_store_id, key, value) VALUES (?, ?, ?)'
-    ).run(storeId, Buffer.from(key), Buffer.from(value));
+    this._stmts(dbName)
+      .get('INSERT OR REPLACE INTO records (object_store_id, key, value) VALUES (?, ?, ?)')
+      .run(storeId, asBuffer(key), asBuffer(value));
   }
 
   /** Get a record from an object store by exact key */
   getRecord(dbName: string, storeId: number, key: Buffer | Uint8Array): Buffer | null {
-    const db = this.getDatabase(dbName);
-    const row = db
-      .prepare('SELECT value FROM records WHERE object_store_id = ? AND key = ?')
-      .get(storeId, Buffer.from(key)) as { value: Buffer } | undefined;
+    const row = this._stmts(dbName)
+      .get('SELECT value FROM records WHERE object_store_id = ? AND key = ?')
+      .get(storeId, asBuffer(key)) as { value: Buffer } | undefined;
     return row ? row.value : null;
   }
 
@@ -221,11 +248,9 @@ export class SQLiteBackend {
 
   /** Delete a record by exact key */
   deleteRecord(dbName: string, storeId: number, key: Buffer | Uint8Array): void {
-    const db = this.getDatabase(dbName);
-    db.prepare('DELETE FROM records WHERE object_store_id = ? AND key = ?').run(
-      storeId,
-      Buffer.from(key)
-    );
+    this._stmts(dbName)
+      .get('DELETE FROM records WHERE object_store_id = ? AND key = ?')
+      .run(storeId, asBuffer(key));
   }
 
   /** Delete records within a key range */
@@ -240,13 +265,13 @@ export class SQLiteBackend {
 
   /** Count records in an object store, optionally within a range */
   countRecords(dbName: string, storeId: number, lower?: Buffer | Uint8Array | null, upper?: Buffer | Uint8Array | null, lowerOpen?: boolean, upperOpen?: boolean): number {
-    const db = this.getDatabase(dbName);
     if (lower === undefined && upper === undefined) {
-      const row = db
-        .prepare('SELECT COUNT(*) as cnt FROM records WHERE object_store_id = ?')
+      const row = this._stmts(dbName)
+        .get('SELECT COUNT(*) as cnt FROM records WHERE object_store_id = ?')
         .get(storeId) as { cnt: number };
       return row.cnt;
     }
+    const db = this.getDatabase(dbName);
     const { sql, params } = this._buildRangeQuery(
       'SELECT COUNT(*) as cnt FROM records',
       storeId, lower ?? null, upper ?? null, lowerOpen ?? false, upperOpen ?? false
@@ -257,37 +282,36 @@ export class SQLiteBackend {
 
   /** Clear all records from an object store */
   clearRecords(dbName: string, storeId: number): void {
-    const db = this.getDatabase(dbName);
-    db.prepare('DELETE FROM records WHERE object_store_id = ?').run(storeId);
+    this._stmts(dbName)
+      .get('DELETE FROM records WHERE object_store_id = ?')
+      .run(storeId);
   }
 
   /** Check if a unique index constraint would be violated */
   checkUniqueIndexConstraint(dbName: string, indexId: number, indexKey: Buffer | Uint8Array, excludePrimaryKey?: Buffer | Uint8Array): boolean {
-    const db = this.getDatabase(dbName);
+    const stmts = this._stmts(dbName);
     if (excludePrimaryKey) {
-      const row = db.prepare(
+      const row = stmts.get(
         'SELECT 1 FROM index_entries WHERE index_id = ? AND key = ? AND primary_key != ? LIMIT 1'
-      ).get(indexId, Buffer.from(indexKey), Buffer.from(excludePrimaryKey));
+      ).get(indexId, asBuffer(indexKey), asBuffer(excludePrimaryKey));
       return !!row;
     }
-    const row = db.prepare(
+    const row = stmts.get(
       'SELECT 1 FROM index_entries WHERE index_id = ? AND key = ? LIMIT 1'
-    ).get(indexId, Buffer.from(indexKey));
+    ).get(indexId, asBuffer(indexKey));
     return !!row;
   }
 
   /** Delete index entries for a primary key */
   deleteIndexEntriesForRecord(dbName: string, storeId: number, primaryKey: Buffer | Uint8Array): void {
-    const db = this.getDatabase(dbName);
-    db.prepare(
+    this._stmts(dbName).get(
       'DELETE FROM index_entries WHERE primary_key = ? AND index_id IN (SELECT id FROM indexes WHERE object_store_id = ?)'
-    ).run(Buffer.from(primaryKey), storeId);
+    ).run(asBuffer(primaryKey), storeId);
   }
 
   /** Get all indexes for a store */
   getIndexesForStore(dbName: string, storeId: number): Array<{ id: number; keyPath: string | string[]; unique: boolean; multiEntry: boolean }> {
-    const db = this.getDatabase(dbName);
-    const rows = db.prepare(
+    const rows = this._stmts(dbName).get(
       'SELECT id, key_path, unique_index, multi_entry FROM indexes WHERE object_store_id = ?'
     ).all(storeId) as Array<{ id: number; key_path: string; unique_index: number; multi_entry: number }>;
     return rows.map(r => ({
@@ -298,7 +322,7 @@ export class SQLiteBackend {
     }));
   }
 
-  /** Build a SQL query with range conditions */
+  /** Build a SQL query with range conditions (dynamic SQL, not cacheable) */
   private _buildRangeQuery(
     prefix: string,
     storeId: number,
@@ -311,19 +335,20 @@ export class SQLiteBackend {
     const params: any[] = [storeId];
     if (lower !== null) {
       conditions.push(lowerOpen ? 'key > ?' : 'key >= ?');
-      params.push(Buffer.from(lower));
+      params.push(asBuffer(lower));
     }
     if (upper !== null) {
       conditions.push(upperOpen ? 'key < ?' : 'key <= ?');
-      params.push(Buffer.from(upper));
+      params.push(asBuffer(upper));
     }
     return { sql: `${prefix} WHERE ${conditions.join(' AND ')}`, params };
   }
 
   /** Update auto-increment counter */
   updateCurrentKey(dbName: string, storeId: number, currentKey: number): void {
-    const db = this.getDatabase(dbName);
-    db.prepare('UPDATE object_stores SET current_key = ? WHERE id = ?').run(currentKey, storeId);
+    this._stmts(dbName)
+      .get('UPDATE object_stores SET current_key = ? WHERE id = ?')
+      .run(currentKey, storeId);
   }
 
   /** Begin a savepoint for a transaction */
@@ -355,20 +380,16 @@ export class SQLiteBackend {
     unique: boolean,
     multiEntry: boolean
   ): number {
-    const db = this.getDatabase(dbName);
-    const result = db
-      .prepare(
-        'INSERT INTO indexes (object_store_id, name, key_path, unique_index, multi_entry) VALUES (?, ?, ?, ?, ?)'
-      )
+    const result = this._stmts(dbName)
+      .get('INSERT INTO indexes (object_store_id, name, key_path, unique_index, multi_entry) VALUES (?, ?, ?, ?, ?)')
       .run(storeId, indexName, JSON.stringify(keyPath), unique ? 1 : 0, multiEntry ? 1 : 0);
     return Number(result.lastInsertRowid);
   }
 
   /** Get index names for an object store */
   getIndexNames(dbName: string, storeId: number): string[] {
-    const db = this.getDatabase(dbName);
-    const rows = db
-      .prepare('SELECT name FROM indexes WHERE object_store_id = ? ORDER BY name')
+    const rows = this._stmts(dbName)
+      .get('SELECT name FROM indexes WHERE object_store_id = ? ORDER BY name')
       .all(storeId) as Array<{ name: string }>;
     return rows.map((r) => r.name);
   }
@@ -379,11 +400,8 @@ export class SQLiteBackend {
     storeId: number,
     indexName: string
   ): { id: number; keyPath: string | string[]; unique: boolean; multiEntry: boolean } | null {
-    const db = this.getDatabase(dbName);
-    const row = db
-      .prepare(
-        'SELECT id, key_path, unique_index, multi_entry FROM indexes WHERE object_store_id = ? AND name = ?'
-      )
+    const row = this._stmts(dbName)
+      .get('SELECT id, key_path, unique_index, multi_entry FROM indexes WHERE object_store_id = ? AND name = ?')
       .get(storeId, indexName) as
       | { id: number; key_path: string; unique_index: number; multi_entry: number }
       | undefined;
@@ -398,42 +416,43 @@ export class SQLiteBackend {
 
   /** Delete an index */
   deleteIndex(dbName: string, storeId: number, indexName: string): void {
-    const db = this.getDatabase(dbName);
-    const idx = db
-      .prepare('SELECT id FROM indexes WHERE object_store_id = ? AND name = ?')
+    const stmts = this._stmts(dbName);
+    const idx = stmts
+      .get('SELECT id FROM indexes WHERE object_store_id = ? AND name = ?')
       .get(storeId, indexName) as { id: number } | undefined;
     if (!idx) return;
-    db.prepare('DELETE FROM index_entries WHERE index_id = ?').run(idx.id);
-    db.prepare('DELETE FROM indexes WHERE id = ?').run(idx.id);
+    stmts.get('DELETE FROM index_entries WHERE index_id = ?').run(idx.id);
+    stmts.get('DELETE FROM indexes WHERE id = ?').run(idx.id);
   }
 
   /** Get the first record via an index by exact key */
   getRecordByIndexKey(dbName: string, indexId: number, indexKey: Buffer | Uint8Array): { primaryKey: Buffer; value: Buffer } | null {
-    const db = this.getDatabase(dbName);
-    const storeIdRow = db.prepare('SELECT object_store_id FROM indexes WHERE id = ?').get(indexId) as { object_store_id: number } | undefined;
+    const stmts = this._stmts(dbName);
+    const storeIdRow = stmts.get('SELECT object_store_id FROM indexes WHERE id = ?').get(indexId) as { object_store_id: number } | undefined;
     if (!storeIdRow) return null;
-    const row = db.prepare(
+    const row = stmts.get(
       'SELECT ie.primary_key, r.value FROM index_entries ie ' +
       'JOIN records r ON r.object_store_id = ? AND r.key = ie.primary_key ' +
       'WHERE ie.index_id = ? AND ie.key = ? ORDER BY ie.primary_key ASC LIMIT 1'
-    ).get(storeIdRow.object_store_id, indexId, Buffer.from(indexKey)) as { primary_key: Buffer; value: Buffer } | undefined;
+    ).get(storeIdRow.object_store_id, indexId, asBuffer(indexKey)) as { primary_key: Buffer; value: Buffer } | undefined;
     return row ? { primaryKey: row.primary_key, value: row.value } : null;
   }
 
   /** Get the first record via an index within a key range */
   getRecordByIndexRange(dbName: string, indexId: number, lower: Buffer | Uint8Array | null, upper: Buffer | Uint8Array | null, lowerOpen: boolean, upperOpen: boolean): { primaryKey: Buffer; value: Buffer; indexKey: Buffer } | null {
     const db = this.getDatabase(dbName);
-    const storeIdRow = db.prepare('SELECT object_store_id FROM indexes WHERE id = ?').get(indexId) as { object_store_id: number } | undefined;
+    const stmts = this._stmts(dbName);
+    const storeIdRow = stmts.get('SELECT object_store_id FROM indexes WHERE id = ?').get(indexId) as { object_store_id: number } | undefined;
     if (!storeIdRow) return null;
     const conditions: string[] = ['ie.index_id = ?'];
     const params: any[] = [storeIdRow.object_store_id, indexId];
     if (lower !== null) {
       conditions.push(lowerOpen ? 'ie.key > ?' : 'ie.key >= ?');
-      params.push(Buffer.from(lower));
+      params.push(asBuffer(lower));
     }
     if (upper !== null) {
       conditions.push(upperOpen ? 'ie.key < ?' : 'ie.key <= ?');
-      params.push(Buffer.from(upper));
+      params.push(asBuffer(upper));
     }
     const sql = 'SELECT ie.key as idx_key, ie.primary_key, r.value FROM index_entries ie ' +
       'JOIN records r ON r.object_store_id = ? AND r.key = ie.primary_key ' +
@@ -444,9 +463,8 @@ export class SQLiteBackend {
 
   /** Count index entries, optionally within a range */
   countIndexEntries(dbName: string, indexId: number, lower?: Buffer | Uint8Array | null, upper?: Buffer | Uint8Array | null, lowerOpen?: boolean, upperOpen?: boolean): number {
-    const db = this.getDatabase(dbName);
     if (lower === undefined && upper === undefined) {
-      const row = db.prepare(
+      const row = this._stmts(dbName).get(
         'SELECT COUNT(*) as cnt FROM index_entries WHERE index_id = ?'
       ).get(indexId) as { cnt: number };
       return row.cnt;
@@ -455,23 +473,23 @@ export class SQLiteBackend {
     const params: any[] = [indexId];
     if (lower !== null && lower !== undefined) {
       conditions.push(lowerOpen ? 'key > ?' : 'key >= ?');
-      params.push(Buffer.from(lower));
+      params.push(asBuffer(lower));
     }
     if (upper !== null && upper !== undefined) {
       conditions.push(upperOpen ? 'key < ?' : 'key <= ?');
-      params.push(Buffer.from(upper));
+      params.push(asBuffer(upper));
     }
     const sql = 'SELECT COUNT(*) as cnt FROM index_entries WHERE ' + conditions.join(' AND ');
+    const db = this.getDatabase(dbName);
     const row = db.prepare(sql).get(...params) as { cnt: number };
     return row.cnt;
   }
 
   /** Add an index entry */
   addIndexEntry(dbName: string, indexId: number, key: Buffer | Uint8Array, primaryKey: Buffer | Uint8Array): void {
-    const db = this.getDatabase(dbName);
-    db.prepare(
+    this._stmts(dbName).get(
       'INSERT OR REPLACE INTO index_entries (index_id, key, primary_key) VALUES (?, ?, ?)'
-    ).run(indexId, Buffer.from(key), Buffer.from(primaryKey));
+    ).run(indexId, asBuffer(key), asBuffer(primaryKey));
   }
 
   /** Get records from an object store for cursor iteration */
@@ -509,11 +527,11 @@ export class SQLiteBackend {
     const params: any[] = [storeId, indexId];
     if (lower !== null) {
       conditions.push(lowerOpen ? 'ie.key > ?' : 'ie.key >= ?');
-      params.push(Buffer.from(lower));
+      params.push(asBuffer(lower));
     }
     if (upper !== null) {
       conditions.push(upperOpen ? 'ie.key < ?' : 'ie.key <= ?');
-      params.push(Buffer.from(upper));
+      params.push(asBuffer(upper));
     }
     let order: string;
     if (direction === 'prev') {
@@ -531,10 +549,9 @@ export class SQLiteBackend {
 
   /** Get a single record by exact primary key (returns key + value) */
   getRecordWithKey(dbName: string, storeId: number, key: Buffer | Uint8Array): { key: Buffer; value: Buffer } | null {
-    const db = this.getDatabase(dbName);
-    const row = db
-      .prepare('SELECT key, value FROM records WHERE object_store_id = ? AND key = ?')
-      .get(storeId, Buffer.from(key)) as { key: Buffer; value: Buffer } | undefined;
+    const row = this._stmts(dbName)
+      .get('SELECT key, value FROM records WHERE object_store_id = ? AND key = ?')
+      .get(storeId, asBuffer(key)) as { key: Buffer; value: Buffer } | undefined;
     return row ?? null;
   }
 
@@ -579,11 +596,11 @@ export class SQLiteBackend {
     const params: any[] = [storeId, indexId];
     if (lower !== null) {
       conditions.push(lowerOpen ? 'ie.key > ?' : 'ie.key >= ?');
-      params.push(Buffer.from(lower));
+      params.push(asBuffer(lower));
     }
     if (upper !== null) {
       conditions.push(upperOpen ? 'ie.key < ?' : 'ie.key <= ?');
-      params.push(Buffer.from(upper));
+      params.push(asBuffer(upper));
     }
     let order: string;
     if (direction === 'prev') {
@@ -608,14 +625,16 @@ export class SQLiteBackend {
 
   /** Rename an object store */
   renameObjectStore(dbName: string, oldName: string, newName: string): void {
-    const db = this.getDatabase(dbName);
-    db.prepare('UPDATE object_stores SET name = ? WHERE name = ?').run(newName, oldName);
+    this._stmts(dbName)
+      .get('UPDATE object_stores SET name = ? WHERE name = ?')
+      .run(newName, oldName);
   }
 
   /** Rename an index */
   renameIndex(dbName: string, storeId: number, oldName: string, newName: string): void {
-    const db = this.getDatabase(dbName);
-    db.prepare('UPDATE indexes SET name = ? WHERE object_store_id = ? AND name = ?').run(newName, storeId, oldName);
+    this._stmts(dbName)
+      .get('UPDATE indexes SET name = ? WHERE object_store_id = ? AND name = ?')
+      .run(newName, storeId, oldName);
   }
 
   /** Close all connections */
@@ -624,6 +643,7 @@ export class SQLiteBackend {
       db.close();
     }
     this._openDbs.clear();
+    this._stmtCaches.clear();
     this._metaDb.close();
   }
 
@@ -632,4 +652,9 @@ export class SQLiteBackend {
     const safe = name.replace(/[^a-zA-Z0-9_-]/g, '_');
     return `db_${safe}.sqlite`;
   }
+}
+
+/** Convert Uint8Array to Buffer only if needed (avoids unnecessary copy) */
+function asBuffer(data: Buffer | Uint8Array): Buffer {
+  return Buffer.isBuffer(data) ? data : Buffer.from(data);
 }

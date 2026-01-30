@@ -653,4 +653,29 @@ Phase 13: Remaining Tests — COMPLETE
   - Overall WPT pass rate: 1208/1272 subtests (95.0%), up from 1188/1272 (93.4%)
   - npx tsc --noEmit passes clean
 
-Next: Phase 14 — Performance Optimization
+Phase 14: Performance Optimization — COMPLETE
+  - Implemented prepared statement caching in SQLiteBackend (src/sqlite-backend.ts):
+    - Created StmtCache class: per-database Map<string, Statement> that lazily prepares
+      and caches SQL statements, avoiding re-parsing on every call
+    - Added _metaStmts cache for metadata database (getDatabaseVersion, databaseExists,
+      setDatabaseVersion, deleteDatabaseRecord, listDatabases)
+    - Added _stmtCaches map for per-database statement caches, created alongside connections
+    - Private _stmts(dbName) helper ensures connection + cache exist before returning cache
+    - closeDatabase() clears associated statement cache
+    - closeAll() clears all statement caches
+  - Converted ~30 fixed-SQL methods from db.prepare() to _stmts(dbName).get():
+    - Metadata: getDatabaseVersion, databaseExists, setDatabaseVersion, deleteDatabaseRecord, listDatabases
+    - Object stores: getObjectStoreNames, createObjectStore, deleteObjectStore, getObjectStoreMetadata
+    - Records: putRecord, getRecord, deleteRecord, countRecords (no-range path), clearRecords
+    - Indexes: createIndex, getIndexNames, getIndexMetadata, deleteIndex, getIndexesForStore
+    - Index entries: addIndexEntry, checkUniqueIndexConstraint, deleteIndexEntriesForRecord
+    - Index lookups: getRecordByIndexKey, getRecordWithKey, countIndexEntries (no-range path)
+    - Updates: updateCurrentKey, renameObjectStore, renameIndex
+  - Dynamic-SQL methods (range queries, cursors) still use db.prepare() since SQL varies per call
+  - Added asBuffer() helper function:
+    - Avoids unnecessary Buffer.from() copies when input is already a Buffer
+    - Applied to all Buffer parameter sites (putRecord, getRecord, deleteRecord, etc.)
+  - No regressions: all 1208/1272 WPT subtests still passing (95.0%)
+  - npx tsc --noEmit passes clean
+
+All phases complete. Project target of 90%+ WPT pass rate achieved (95.0%).
