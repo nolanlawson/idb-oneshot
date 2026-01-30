@@ -50,9 +50,13 @@ for (const scriptPath of metaScripts) {
 }
 
 // 6. Register completion callback to output results
+// Keep the event loop alive until tests complete (async tests use setTimeout)
+const keepAliveInterval = setInterval(() => {}, 500);
+
 const harness = (globalThis as any);
 harness.add_completion_callback(
   (tests: Array<{ name: string; status: number; message: string | null }>, harnessStatus: { status: number; message: string | null }) => {
+    clearInterval(keepAliveInterval);
     const results = {
       status: harnessStatus.status,
       message: harnessStatus.message,

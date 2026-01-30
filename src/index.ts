@@ -1,4 +1,10 @@
 // Public API — barrel export
+
+// Register the IDBObjectStore factory to break circular dependency
+import { IDBObjectStore } from './IDBObjectStore.ts';
+import { _setObjectStoreFactory } from './IDBTransaction.ts';
+_setObjectStoreFactory((transaction, name) => new IDBObjectStore(transaction, name));
+
 export { IDBFactory } from './IDBFactory.ts';
 export { IDBKeyRange } from './IDBKeyRange.ts';
 export { IDBRequest, IDBOpenDBRequest } from './IDBRequest.ts';

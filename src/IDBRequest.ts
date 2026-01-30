@@ -1,11 +1,11 @@
-// IDBRequest implementation (stub for Phase 1, full implementation in Phase 2)
+// IDBRequest and IDBOpenDBRequest implementation
 
 export class IDBRequest extends EventTarget {
-  private _result: any = undefined;
-  private _error: DOMException | null = null;
-  private _readyState: 'pending' | 'done' = 'pending';
-  private _source: any = null;
-  private _transaction: any = null;
+  _result: any = undefined;
+  _error: DOMException | null = null;
+  _readyState: 'pending' | 'done' = 'pending';
+  _source: any = null;
+  _transaction: any = null;
 
   get result(): any {
     if (this._readyState === 'pending') {
@@ -37,6 +37,20 @@ export class IDBRequest extends EventTarget {
 
   get transaction(): any {
     return this._transaction;
+  }
+
+  dispatchEvent(event: Event): boolean {
+    // In the DOM, on* attribute handlers fire alongside addEventListener listeners.
+    // We temporarily add the on* handler as a listener so event.target is set correctly.
+    const handler = (this as any)['on' + event.type];
+    if (typeof handler === 'function') {
+      this.addEventListener(event.type, handler, { once: true });
+    }
+    const result = super.dispatchEvent(event);
+    if (typeof handler === 'function') {
+      this.removeEventListener(event.type, handler);
+    }
+    return result;
   }
 
   // Event handlers

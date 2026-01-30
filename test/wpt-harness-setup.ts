@@ -46,6 +46,15 @@ export function setupGlobals(testFile: string): void {
   // Ensure `document` is not present (Node doesn't have it, but be safe)
   delete (globalThis as any).document;
 
+  // Provide addEventListener/removeEventListener/dispatchEvent on globalThis
+  // so testharness.js can listen for 'load' event to trigger async tests
+  if (typeof (globalThis as any).addEventListener !== 'function') {
+    const eventTarget = new EventTarget();
+    (globalThis as any).addEventListener = eventTarget.addEventListener.bind(eventTarget);
+    (globalThis as any).removeEventListener = eventTarget.removeEventListener.bind(eventTarget);
+    (globalThis as any).dispatchEvent = eventTarget.dispatchEvent.bind(eventTarget);
+  }
+
   // fetch shim (some support scripts reference it)
   if (!(globalThis as any).fetch) {
     (globalThis as any).fetch = () =>

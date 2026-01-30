@@ -1,0 +1,344 @@
+// SQLite backend - the only file that imports better-sqlite3
+// Provides all database storage operations for the IndexedDB implementation
+
+import Database from 'better-sqlite3';
+import { mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+
+const METADATA_DB = '_metadata.sqlite';
+
+// Schema for per-database SQLite files
+const DB_SCHEMA = `
+CREATE TABLE IF NOT EXISTS object_stores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  key_path TEXT,
+  auto_increment INTEGER NOT NULL DEFAULT 0,
+  current_key INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS indexes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  object_store_id INTEGER NOT NULL REFERENCES object_stores(id),
+  name TEXT NOT NULL,
+  key_path TEXT NOT NULL,
+  unique_index INTEGER NOT NULL DEFAULT 0,
+  multi_entry INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(object_store_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS records (
+  object_store_id INTEGER NOT NULL,
+  key BLOB NOT NULL,
+  value BLOB NOT NULL,
+  PRIMARY KEY (object_store_id, key)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS index_entries (
+  index_id INTEGER NOT NULL,
+  key BLOB NOT NULL,
+  primary_key BLOB NOT NULL,
+  PRIMARY KEY (index_id, key, primary_key)
+) WITHOUT ROWID;
+`;
+
+export class SQLiteBackend {
+  private _storagePath: string;
+  private _metaDb: Database.Database;
+  // Map of open database connections: dbName -> Database.Database
+  private _openDbs: Map<string, Database.Database> = new Map();
+
+  constructor(storagePath: string) {
+    this._storagePath = storagePath;
+    mkdirSync(storagePath, { recursive: true });
+    this._metaDb = new Database(join(storagePath, METADATA_DB));
+    this._metaDb.pragma('journal_mode = WAL');
+    this._metaDb.exec(
+      'CREATE TABLE IF NOT EXISTS databases (name TEXT PRIMARY KEY, version INTEGER NOT NULL)'
+    );
+  }
+
+  /** Get or create a database connection for a named IDB database */
+  getDatabase(name: string): Database.Database {
+    let db = this._openDbs.get(name);
+    if (!db) {
+      const dbPath = join(this._storagePath, this._fileNameForDb(name));
+      db = new Database(dbPath);
+      db.pragma('journal_mode = WAL');
+      db.exec(DB_SCHEMA);
+      this._openDbs.set(name, db);
+    }
+    return db;
+  }
+
+  /** Close a specific database connection */
+  closeDatabase(name: string): void {
+    const db = this._openDbs.get(name);
+    if (db) {
+      db.close();
+      this._openDbs.delete(name);
+    }
+  }
+
+  /** Get the stored version of a database, or 0 if it doesn't exist */
+  getDatabaseVersion(name: string): number {
+    const row = this._metaDb
+      .prepare('SELECT version FROM databases WHERE name = ?')
+      .get(name) as { version: number } | undefined;
+    return row ? row.version : 0;
+  }
+
+  /** Check if a database exists in metadata */
+  databaseExists(name: string): boolean {
+    const row = this._metaDb
+      .prepare('SELECT 1 FROM databases WHERE name = ?')
+      .get(name);
+    return !!row;
+  }
+
+  /** Set the version of a database in metadata */
+  setDatabaseVersion(name: string, version: number): void {
+    this._metaDb
+      .prepare(
+        'INSERT INTO databases (name, version) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET version = ?'
+      )
+      .run(name, version, version);
+  }
+
+  /** Delete database metadata and SQLite file */
+  deleteDatabaseRecord(name: string): void {
+    this.closeDatabase(name);
+    this._metaDb.prepare('DELETE FROM databases WHERE name = ?').run(name);
+    const dbPath = join(this._storagePath, this._fileNameForDb(name));
+    if (existsSync(dbPath)) {
+      try {
+        unlinkSync(dbPath);
+      } catch {
+        // ignore
+      }
+    }
+    // Also remove WAL/SHM files
+    for (const suffix of ['-wal', '-shm']) {
+      const p = dbPath + suffix;
+      if (existsSync(p)) {
+        try { unlinkSync(p); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  /** List all databases */
+  listDatabases(): Array<{ name: string; version: number }> {
+    return this._metaDb
+      .prepare('SELECT name, version FROM databases')
+      .all() as Array<{ name: string; version: number }>;
+  }
+
+  /** Get all object store names for a database */
+  getObjectStoreNames(dbName: string): string[] {
+    const db = this.getDatabase(dbName);
+    const rows = db
+      .prepare('SELECT name FROM object_stores ORDER BY name')
+      .all() as Array<{ name: string }>;
+    return rows.map((r) => r.name);
+  }
+
+  /** Create an object store */
+  createObjectStore(
+    dbName: string,
+    storeName: string,
+    keyPath: string | string[] | null,
+    autoIncrement: boolean
+  ): number {
+    const db = this.getDatabase(dbName);
+    const result = db
+      .prepare(
+        'INSERT INTO object_stores (name, key_path, auto_increment) VALUES (?, ?, ?)'
+      )
+      .run(storeName, keyPath === null ? null : JSON.stringify(keyPath), autoIncrement ? 1 : 0);
+    return Number(result.lastInsertRowid);
+  }
+
+  /** Delete an object store and its records/indexes */
+  deleteObjectStore(dbName: string, storeName: string): void {
+    const db = this.getDatabase(dbName);
+    const store = db
+      .prepare('SELECT id FROM object_stores WHERE name = ?')
+      .get(storeName) as { id: number } | undefined;
+    if (!store) return;
+    db.prepare('DELETE FROM index_entries WHERE index_id IN (SELECT id FROM indexes WHERE object_store_id = ?)').run(store.id);
+    db.prepare('DELETE FROM indexes WHERE object_store_id = ?').run(store.id);
+    db.prepare('DELETE FROM records WHERE object_store_id = ?').run(store.id);
+    db.prepare('DELETE FROM object_stores WHERE id = ?').run(store.id);
+  }
+
+  /** Get object store metadata */
+  getObjectStoreMetadata(
+    dbName: string,
+    storeName: string
+  ): { id: number; keyPath: string | string[] | null; autoIncrement: boolean; currentKey: number } | null {
+    const db = this.getDatabase(dbName);
+    const row = db
+      .prepare('SELECT id, key_path, auto_increment, current_key FROM object_stores WHERE name = ?')
+      .get(storeName) as
+      | { id: number; key_path: string | null; auto_increment: number; current_key: number }
+      | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      keyPath: row.key_path === null ? null : JSON.parse(row.key_path),
+      autoIncrement: row.auto_increment !== 0,
+      currentKey: row.current_key,
+    };
+  }
+
+  /** Put a record into an object store */
+  putRecord(dbName: string, storeId: number, key: Buffer | Uint8Array, value: Buffer | Uint8Array): void {
+    const db = this.getDatabase(dbName);
+    db.prepare(
+      'INSERT OR REPLACE INTO records (object_store_id, key, value) VALUES (?, ?, ?)'
+    ).run(storeId, Buffer.from(key), Buffer.from(value));
+  }
+
+  /** Get a record from an object store */
+  getRecord(dbName: string, storeId: number, key: Buffer | Uint8Array): Buffer | null {
+    const db = this.getDatabase(dbName);
+    const row = db
+      .prepare('SELECT value FROM records WHERE object_store_id = ? AND key = ?')
+      .get(storeId, Buffer.from(key)) as { value: Buffer } | undefined;
+    return row ? row.value : null;
+  }
+
+  /** Delete a record */
+  deleteRecord(dbName: string, storeId: number, key: Buffer | Uint8Array): void {
+    const db = this.getDatabase(dbName);
+    db.prepare('DELETE FROM records WHERE object_store_id = ? AND key = ?').run(
+      storeId,
+      Buffer.from(key)
+    );
+  }
+
+  /** Count records in an object store */
+  countRecords(dbName: string, storeId: number): number {
+    const db = this.getDatabase(dbName);
+    const row = db
+      .prepare('SELECT COUNT(*) as cnt FROM records WHERE object_store_id = ?')
+      .get(storeId) as { cnt: number };
+    return row.cnt;
+  }
+
+  /** Clear all records from an object store */
+  clearRecords(dbName: string, storeId: number): void {
+    const db = this.getDatabase(dbName);
+    db.prepare('DELETE FROM records WHERE object_store_id = ?').run(storeId);
+  }
+
+  /** Update auto-increment counter */
+  updateCurrentKey(dbName: string, storeId: number, currentKey: number): void {
+    const db = this.getDatabase(dbName);
+    db.prepare('UPDATE object_stores SET current_key = ? WHERE id = ?').run(currentKey, storeId);
+  }
+
+  /** Begin a savepoint for a transaction */
+  beginSavepoint(dbName: string, savepointName: string): void {
+    const db = this.getDatabase(dbName);
+    db.exec(`SAVEPOINT "${savepointName}"`);
+  }
+
+  /** Release (commit) a savepoint */
+  releaseSavepoint(dbName: string, savepointName: string): void {
+    const db = this.getDatabase(dbName);
+    db.exec(`RELEASE SAVEPOINT "${savepointName}"`);
+  }
+
+  /** Rollback to a savepoint */
+  rollbackSavepoint(dbName: string, savepointName: string): void {
+    const db = this.getDatabase(dbName);
+    db.exec(`ROLLBACK TO SAVEPOINT "${savepointName}"`);
+    // Release after rollback to clean up the savepoint
+    db.exec(`RELEASE SAVEPOINT "${savepointName}"`);
+  }
+
+  /** Create an index */
+  createIndex(
+    dbName: string,
+    storeId: number,
+    indexName: string,
+    keyPath: string | string[],
+    unique: boolean,
+    multiEntry: boolean
+  ): number {
+    const db = this.getDatabase(dbName);
+    const result = db
+      .prepare(
+        'INSERT INTO indexes (object_store_id, name, key_path, unique_index, multi_entry) VALUES (?, ?, ?, ?, ?)'
+      )
+      .run(storeId, indexName, JSON.stringify(keyPath), unique ? 1 : 0, multiEntry ? 1 : 0);
+    return Number(result.lastInsertRowid);
+  }
+
+  /** Get index names for an object store */
+  getIndexNames(dbName: string, storeId: number): string[] {
+    const db = this.getDatabase(dbName);
+    const rows = db
+      .prepare('SELECT name FROM indexes WHERE object_store_id = ? ORDER BY name')
+      .all(storeId) as Array<{ name: string }>;
+    return rows.map((r) => r.name);
+  }
+
+  /** Get index metadata */
+  getIndexMetadata(
+    dbName: string,
+    storeId: number,
+    indexName: string
+  ): { id: number; keyPath: string | string[]; unique: boolean; multiEntry: boolean } | null {
+    const db = this.getDatabase(dbName);
+    const row = db
+      .prepare(
+        'SELECT id, key_path, unique_index, multi_entry FROM indexes WHERE object_store_id = ? AND name = ?'
+      )
+      .get(storeId, indexName) as
+      | { id: number; key_path: string; unique_index: number; multi_entry: number }
+      | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      keyPath: JSON.parse(row.key_path),
+      unique: row.unique_index !== 0,
+      multiEntry: row.multi_entry !== 0,
+    };
+  }
+
+  /** Delete an index */
+  deleteIndex(dbName: string, storeId: number, indexName: string): void {
+    const db = this.getDatabase(dbName);
+    const idx = db
+      .prepare('SELECT id FROM indexes WHERE object_store_id = ? AND name = ?')
+      .get(storeId, indexName) as { id: number } | undefined;
+    if (!idx) return;
+    db.prepare('DELETE FROM index_entries WHERE index_id = ?').run(idx.id);
+    db.prepare('DELETE FROM indexes WHERE id = ?').run(idx.id);
+  }
+
+  /** Add an index entry */
+  addIndexEntry(dbName: string, indexId: number, key: Buffer | Uint8Array, primaryKey: Buffer | Uint8Array): void {
+    const db = this.getDatabase(dbName);
+    db.prepare(
+      'INSERT OR REPLACE INTO index_entries (index_id, key, primary_key) VALUES (?, ?, ?)'
+    ).run(indexId, Buffer.from(key), Buffer.from(primaryKey));
+  }
+
+  /** Close all connections */
+  closeAll(): void {
+    for (const [name, db] of this._openDbs) {
+      db.close();
+    }
+    this._openDbs.clear();
+    this._metaDb.close();
+  }
+
+  private _fileNameForDb(name: string): string {
+    // Sanitize database name for filesystem
+    const safe = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `db_${safe}.sqlite`;
+  }
+}

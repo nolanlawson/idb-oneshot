@@ -30,4 +30,61 @@ Phase 1: IDBKeyRange + Key Validation + IDBFactory.cmp() — COMPLETE
   - key_valid.any.js, key_invalid.any.js, keyorder.any.js deferred to Phase 2 (require indexedDB.open)
   - npx tsc --noEmit passes clean
 
-Next: Phase 2 — IDBFactory.open() + Database Lifecycle
+Phase 2: IDBFactory.open() + Database Lifecycle — COMPLETE
+  - Created src/sqlite-backend.ts (SQLiteBackend class wrapping better-sqlite3: metadata DB, per-database files, CRUD for object stores/records/indexes, savepoint management)
+  - Created src/scheduling.ts (queueTask via setTimeout(0) for async event dispatch)
+  - Implemented src/IDBFactory.ts:
+    - open(name, version): async open with version validation, upgrade transaction lifecycle, IDBVersionChangeEvent dispatch
+    - deleteDatabase(name): async delete with versionchange notification to open connections, proper oldVersion tracking
+    - databases(): returns list from metadata DB
+    - Connection tracking for versionchange event dispatch (skips closed connections)
+  - Implemented src/IDBDatabase.ts:
+    - Connection properties: name, version, objectStoreNames (live from backend)
+    - createObjectStore(): validates version change context, creates store in SQLite, updates transaction scope
+    - deleteObjectStore(): validates context, deletes store and related records/indexes
+    - transaction(): creates IDBTransaction with store name validation, auto-commit via microtask
+    - close(): marks connection as closing to prevent new transactions
+    - dispatchEvent override: wires on* handler properties to addEventListener pattern
+  - Implemented src/IDBTransaction.ts:
+    - Transaction lifecycle: active → inactive → committing → finished
+    - objectStore(): SameObject-cached IDBObjectStore instances
+    - abort(): rolls back SQLite savepoint, fires abort event, notifies DB for versionchange
+    - commit()/auto-commit: releases savepoint, fires complete event
+    - _createRequest(): creates IDBRequest with proper transaction binding
+    - dispatchEvent override for on* handlers
+    - Factory function pattern to break circular IDBObjectStore dependency
+  - Implemented src/IDBObjectStore.ts:
+    - CRUD operations: put(), add(), get(), getKey(), delete(), clear(), count()
+    - Key path evaluation and injection for in-line keys
+    - Auto-increment key generation
+    - createIndex()/deleteIndex() for versionchange transactions
+    - All operations fire events asynchronously via queueTask
+  - Implemented src/IDBRequest.ts:
+    - dispatchEvent override: temporarily registers on* handler as addEventListener listener for correct event.target
+  - Updated src/IDBVersionChangeEvent.ts (unchanged, already working from Phase 1)
+  - Updated src/types.ts: added global IDBTransactionMode type declaration
+  - Updated src/index.ts: registers IDBObjectStore factory function to break circular dependency
+  - Updated test/wpt-harness-setup.ts: added addEventListener/removeEventListener/dispatchEvent on globalThis for async test support
+  - Updated test/wpt-subprocess.ts: added keepAliveInterval to prevent premature process exit during async tests
+  - WPT results (90/92 subtests passing across Phase 1+2):
+    Phase 1 (55/55 — unchanged):
+    - idbkeyrange.any.js: 10/10 PASS
+    - idbkeyrange-includes.any.js: 11/11 PASS
+    - idbkeyrange_incorrect.any.js: 7/7 PASS
+    - idbfactory_cmp.any.js: 12/12 PASS
+    - historical.any.js: 15/15 PASS
+    Phase 2 (35/37):
+    - idbfactory_open.any.js: 28/29 PASS (1 fail requires cursor/index — Phase 4/5)
+    - idbfactory-open-request-success.any.js: 1/1 PASS
+    - idbfactory-open-request-error.any.js: 0/1 FAIL (requires unique index constraint — Phase 4)
+    - idbfactory-open-error-properties.any.js: 1/1 PASS
+    - idbfactory_deleteDatabase.any.js: 4/4 PASS
+    - idbfactory-deleteDatabase-request-success.any.js: 1/1 PASS
+    - idbversionchangeevent.any.js: 1/1 PASS
+  - Deferred key tests now partially work with open():
+    - key_valid.any.js: 14/18 (4 fail: Date/Infinity serialization — Phase 10 structured clone)
+    - key_invalid.any.js: 33/34 (1 fail: Proxy array detection in put context)
+    - keyorder.any.js: 12/24 (12 fail: require cursor — Phase 5)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 3 — Object Store CRUD
