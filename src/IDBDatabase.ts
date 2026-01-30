@@ -4,6 +4,7 @@ import { DOMStringList } from './DOMStringList.ts';
 import { IDBTransaction } from './IDBTransaction.ts';
 import { IDBObjectStore, isValidKeyPath } from './IDBObjectStore.ts';
 import type { SQLiteBackend } from './sqlite-backend.ts';
+import { initEventTarget } from './scheduling.ts';
 
 export class IDBDatabase extends EventTarget {
   _name: string;
@@ -36,6 +37,7 @@ export class IDBDatabase extends EventTarget {
 
   constructor(name: string, version: number, backend: SQLiteBackend) {
     super();
+    initEventTarget(this);
     this._name = name;
     this._version = version;
     this._backend = backend;
@@ -135,6 +137,10 @@ export class IDBDatabase extends EventTarget {
     // Create and return the IDBObjectStore
     const store = new IDBObjectStore(this._upgradeTransaction, name);
     this._upgradeTransaction._objectStoreCache.set(name, store);
+
+    // Track for abort revert
+    this._upgradeTransaction._createdStoreNames.push(name);
+
     return store;
   }
 
@@ -167,6 +173,20 @@ export class IDBDatabase extends EventTarget {
     const cachedStore = this._upgradeTransaction._objectStoreCache.get(name);
     if (cachedStore && cachedStore._deleted !== undefined) {
       cachedStore._deleted = true;
+      // Mark all indexes on the store as deleted and clear indexNames
+      for (const [, idx] of cachedStore._indexCache) {
+        idx._deleted = true;
+      }
+      cachedStore._indexNamesCache = new DOMStringList([]);
+    }
+
+    // Track for abort revert (only if the store existed before this transaction)
+    const wasCreatedInThisTxn = this._upgradeTransaction._createdStoreNames.includes(name);
+    if (!wasCreatedInThisTxn) {
+      this._upgradeTransaction._deletedStoreNames.push(name);
+      if (cachedStore) {
+        this._upgradeTransaction._deletedStoreCache.set(name, cachedStore);
+      }
     }
 
     this._backend.deleteObjectStore(this._name, name);

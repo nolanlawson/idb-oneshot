@@ -298,4 +298,45 @@ Phase 6: Transaction Lifecycle + Scheduling — COMPLETE
   - Overall WPT pass rate: 688/1076 subtests (63.9%)
   - npx tsc --noEmit passes clean
 
-Next: Phase 7 — Transaction Abort + Metadata Revert
+Phase 7: Transaction Abort + Metadata Revert — COMPLETE
+  - Implemented metadata revert tracking in IDBTransaction:
+    - _createdStoreNames/_deletedStoreNames: track stores created/deleted during versionchange
+    - _deletedStoreCache: preserve IDBObjectStore references for deleted stores
+    - _createdIndexes/_deletedIndexes: track indexes created/deleted during versionchange
+    - _revertMetadata(): on abort, reverts _deleted flags, objectStoreNames, indexNames
+  - Updated IDBDatabase.createObjectStore():
+    - Tracks created store names for abort revert
+  - Updated IDBDatabase.deleteObjectStore():
+    - Marks all indexes on deleted store as deleted, clears indexNames
+    - Tracks deleted store names (only for pre-existing stores, not created-in-txn)
+    - Preserves cached IDBObjectStore references in _deletedStoreCache
+  - Updated IDBObjectStore.createIndex():
+    - Tracks created indexes for abort revert
+  - Updated IDBObjectStore.deleteIndex():
+    - Tracks deleted indexes for abort revert (only for pre-existing indexes)
+    - Creates IDBIndex reference for uncached indexes being deleted
+  - Updated IDBTransaction.abort():
+    - Calls _revertMetadata() for versionchange transactions
+    - Fires error events on pending requests before abort event
+    - Pending requests get AbortError with readyState='done'
+  - Implemented proper IDB event propagation (capture/target/bubble phases):
+    - Created initEventTarget() to track addEventListener/removeEventListener calls
+    - Created idbDispatchEvent() for proper DOM event path with capture/bubble phases
+    - Uses Object.defineProperty to set event.target correctly for all phases
+    - IDBRequest.dispatchEvent: propagates through [request → transaction → database]
+    - IDBTransaction.dispatchEvent: propagates through [transaction → database]
+    - IDBDatabase constructor: registers with initEventTarget for listener tracking
+  - WPT results (16/16 Phase 7 subtests passing):
+    - transaction-abort-generator-revert.any.js: 2/2 PASS
+    - transaction-abort-object-store-metadata-revert.any.js: 4/4 PASS
+    - transaction-abort-index-metadata-revert.any.js: 6/6 PASS
+    - transaction-abort-multiple-metadata-revert.any.js: 3/3 PASS
+    - transaction-abort-request-error.any.js: 1/1 PASS
+  - Bonus improvements from event propagation work:
+    - request_bubble-and-capture.any.js: 1/1 PASS (new, was Phase 11)
+    - transaction_bubble-and-capture.any.js: 1/1 PASS (new, was Phase 11)
+  - No regressions in previously passing tests
+  - Overall WPT pass rate: 702/1077 subtests (65.2%)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 8 — Exception Ordering + Rename

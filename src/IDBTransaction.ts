@@ -2,7 +2,7 @@
 
 import { DOMStringList } from './DOMStringList.ts';
 import { IDBRequest } from './IDBRequest.ts';
-import { queueTask } from './scheduling.ts';
+import { queueTask, initEventTarget, idbDispatchEvent } from './scheduling.ts';
 import { getScheduler } from './transaction-scheduler.ts';
 
 // Factory function to create IDBObjectStore without circular import
@@ -27,6 +27,13 @@ export class IDBTransaction extends EventTarget {
   _savepointStarted: boolean = false;
   _objectStoreCache: Map<string, any> = new Map(); // SameObject cache
 
+  // Metadata revert tracking for versionchange transactions
+  _createdStoreNames: string[] = []; // Stores created in this transaction
+  _deletedStoreNames: string[] = []; // Stores deleted in this transaction
+  _deletedStoreCache: Map<string, any> = new Map(); // Cached IDBObjectStore instances for deleted stores
+  _createdIndexes: Array<{ store: any; index: any; name: string }> = []; // Indexes created
+  _deletedIndexes: Array<{ store: any; index: any; name: string }> = []; // Indexes deleted
+
   // Transaction scheduling
   _started: boolean = false; // Whether the scheduler has given permission to run
   _pendingCallbacks: Array<() => void> = []; // Buffered request event callbacks
@@ -39,6 +46,17 @@ export class IDBTransaction extends EventTarget {
   onerror: ((this: IDBTransaction, ev: Event) => any) | null = null;
 
   dispatchEvent(event: Event): boolean {
+    // Build ancestor path: transaction → database
+    const ancestors: EventTarget[] = [];
+    if (event.bubbles && !event.cancelBubble && this._db) {
+      ancestors.push(this._db);
+    }
+
+    if (ancestors.length > 0) {
+      return idbDispatchEvent(this, ancestors, event);
+    }
+
+    // Simple dispatch with on* handler
     const handler = (this as any)['on' + event.type];
     if (typeof handler === 'function') {
       this.addEventListener(event.type, handler, { once: true });
@@ -47,15 +65,12 @@ export class IDBTransaction extends EventTarget {
     if (typeof handler === 'function') {
       this.removeEventListener(event.type, handler);
     }
-    // Bubble to the database if the event bubbles and wasn't stopped
-    if (event.bubbles && !event.cancelBubble && this._db) {
-      this._db.dispatchEvent(event);
-    }
     return result;
   }
 
   constructor(db: any, storeNames: string[], mode: IDBTransactionMode) {
     super();
+    initEventTarget(this);
     this._db = db;
     this._mode = mode;
     this._storeNames = storeNames.slice().sort();
@@ -127,19 +142,33 @@ export class IDBTransaction extends EventTarget {
       this._savepointStarted = false;
     }
 
-    // Set error on all pending requests
+    // Revert metadata for versionchange transactions
+    if (this._mode === 'versionchange') {
+      this._revertMetadata();
+    }
+
+    // Set error on all pending requests and fire error events
+    const pendingRequests: any[] = [];
     for (const request of this._requests) {
       if (request._readyState === 'pending') {
         request._readyState = 'done';
         request._error = this._error;
+        request._result = undefined;
+        pendingRequests.push(request);
       }
     }
 
     // Clear any pending callbacks
     this._pendingCallbacks = [];
 
-    // Fire abort event
+    // Fire abort event and error events on pending requests
     queueTask(() => {
+      // Fire error events on pending requests first (with bubbling)
+      for (const request of pendingRequests) {
+        const errorEvent = new Event('error', { bubbles: true, cancelable: true });
+        request.dispatchEvent(errorEvent);
+      }
+
       const abortEvent = new Event('abort', { bubbles: true, cancelable: false });
       this.dispatchEvent(abortEvent);
 
@@ -156,6 +185,75 @@ export class IDBTransaction extends EventTarget {
         });
       }
     });
+  }
+
+  /** Revert metadata changes made during a versionchange transaction */
+  _revertMetadata(): void {
+    // Revert created stores: mark them as deleted
+    for (const name of this._createdStoreNames) {
+      const store = this._objectStoreCache.get(name);
+      if (store) {
+        store._deleted = true;
+        // Also mark all indexes on the created store as deleted
+        for (const [, idx] of store._indexCache) {
+          idx._deleted = true;
+        }
+        // Clear index names cache to show empty
+        store._indexNamesCache = new DOMStringList([]);
+      }
+    }
+
+    // Revert deleted stores: un-delete them
+    for (const name of this._deletedStoreNames) {
+      const store = this._deletedStoreCache.get(name) || this._objectStoreCache.get(name);
+      if (store) {
+        store._deleted = false;
+        // Restore indexes that were on the store before deletion
+        // Re-read from the database (which was rolled back)
+        const meta = this._db._backend.getObjectStoreMetadata(this._db._name, name);
+        if (meta) {
+          store._storeId = meta.id;
+          // Un-delete all cached indexes on this store
+          for (const [, idx] of store._indexCache) {
+            idx._deleted = false;
+          }
+          // Invalidate index names to re-read from DB
+          store._indexNamesCache = null;
+        }
+      }
+    }
+
+    // Revert created indexes: mark them as deleted (if store is not already deleted)
+    for (const { index } of this._createdIndexes) {
+      index._deleted = true;
+    }
+
+    // Revert deleted indexes: un-delete them
+    for (const { store, index, name } of this._deletedIndexes) {
+      if (!store._deleted) {
+        index._deleted = false;
+        // Re-add to cache
+        store._indexCache.set(name, index);
+      }
+    }
+
+    // Invalidate index names caches on all stores that are not deleted
+    for (const [, store] of this._objectStoreCache) {
+      if (!store._deleted) {
+        store._indexNamesCache = null;
+      }
+    }
+    for (const [, store] of this._deletedStoreCache) {
+      if (!store._deleted) {
+        store._indexNamesCache = null;
+      }
+    }
+
+    // Revert objectStoreNames on this transaction and the database
+    const revertedNames = this._db._backend.getObjectStoreNames(this._db._name);
+    this._storeNames = revertedNames.slice().sort();
+    this._objectStoreNames = new DOMStringList(this._storeNames);
+    this._db._objectStoreNamesCache = null;
   }
 
   commit(): void {

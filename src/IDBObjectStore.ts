@@ -583,6 +583,9 @@ export class IDBObjectStore {
     idx._createdInTransaction = this._transaction;
     this._indexCache.set(name, idx);
 
+    // Track for abort revert
+    this._transaction._createdIndexes.push({ store: this, index: idx, name });
+
     if (constraintViolated) {
       this._transaction.abort();
     }
@@ -610,7 +613,24 @@ export class IDBObjectStore {
     const cached = this._indexCache.get(name);
     if (cached) {
       cached._deleted = true;
+      // Track for abort revert (only if not created in this transaction)
+      const wasCreatedInThisTxn = cached._createdInTransaction === this._transaction;
+      if (!wasCreatedInThisTxn) {
+        this._transaction._deletedIndexes.push({ store: this, index: cached, name });
+      }
       this._indexCache.delete(name);
+    } else {
+      // Index not cached yet — create a reference and track it
+      const meta = this._transaction._db._backend.getIndexMetadata(
+        this._transaction._db._name,
+        this._storeId,
+        name
+      );
+      if (meta) {
+        const idx = new IDBIndex(this, name, meta.id, meta.keyPath, meta.unique, meta.multiEntry);
+        idx._deleted = true;
+        this._transaction._deletedIndexes.push({ store: this, index: idx, name });
+      }
     }
 
     // Invalidate index names cache

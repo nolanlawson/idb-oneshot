@@ -1,5 +1,7 @@
 // IDBRequest and IDBOpenDBRequest implementation
 
+import { initEventTarget, idbDispatchEvent } from './scheduling.ts';
+
 export class IDBRequest extends EventTarget {
   _result: any = undefined;
   _error: DOMException | null = null;
@@ -7,6 +9,12 @@ export class IDBRequest extends EventTarget {
   _source: any = null;
   _transaction: any = null;
   _constraintError: boolean = false;
+  _suppressBubble: boolean = false;
+
+  constructor() {
+    super();
+    initEventTarget(this);
+  }
 
   get result(): any {
     if (this._readyState === 'pending') {
@@ -41,8 +49,20 @@ export class IDBRequest extends EventTarget {
   }
 
   dispatchEvent(event: Event): boolean {
-    // In the DOM, on* attribute handlers fire alongside addEventListener listeners.
-    // We temporarily add the on* handler as a listener so event.target is set correctly.
+    // Build ancestor path for proper IDB event propagation (capture/target/bubble)
+    const ancestors: EventTarget[] = [];
+    if (this._transaction && !this._suppressBubble) {
+      ancestors.push(this._transaction);
+      if (this._transaction._db) {
+        ancestors.push(this._transaction._db);
+      }
+    }
+
+    if (ancestors.length > 0 && !this._suppressBubble) {
+      return idbDispatchEvent(this, ancestors, event);
+    }
+
+    // Simple dispatch with on* handler (for IDBOpenDBRequest without transaction)
     const handler = (this as any)['on' + event.type];
     if (typeof handler === 'function') {
       this.addEventListener(event.type, handler, { once: true });
@@ -50,10 +70,6 @@ export class IDBRequest extends EventTarget {
     const result = super.dispatchEvent(event);
     if (typeof handler === 'function') {
       this.removeEventListener(event.type, handler);
-    }
-    // Bubble to the transaction if the event bubbles and wasn't stopped
-    if (event.bubbles && !event.cancelBubble && this._transaction) {
-      this._transaction.dispatchEvent(event);
     }
     return result;
   }

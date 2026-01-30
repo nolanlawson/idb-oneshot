@@ -195,7 +195,7 @@ Core async infrastructure: event dispatch timing, request lifecycle, version cha
 
 **Files**: `src/transaction-scheduler.ts` (new), `src/IDBTransaction.ts`, `src/IDBDatabase.ts`, `src/IDBObjectStore.ts`, `src/IDBIndex.ts`, `src/IDBCursor.ts`, `src/IDBRequest.ts`
 
-### Phase 7: Transaction Abort + Metadata Revert
+### Phase 7: Transaction Abort + Metadata Revert ✅
 **Target tests**: `transaction-abort-generator-revert.any.js`, `transaction-abort-index-metadata-revert.any.js`, `transaction-abort-multiple-metadata-revert.any.js`, `transaction-abort-object-store-metadata-revert.any.js`, `transaction-abort-request-error.any.js`
 
 Uses SQLite `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for abort semantics.
