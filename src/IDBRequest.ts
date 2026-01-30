@@ -11,7 +11,6 @@ export class IDBRequest extends EventTarget {
   _source: any = null;
   _transaction: any = null;
   _constraintError: boolean = false;
-  _suppressBubble: boolean = false;
 
   constructor() {
     super();
@@ -53,27 +52,19 @@ export class IDBRequest extends EventTarget {
   dispatchEvent(event: Event): boolean {
     // Build ancestor path for proper IDB event propagation (capture/target/bubble)
     const ancestors: EventTarget[] = [];
-    if (this._transaction && !this._suppressBubble) {
+    if (this._transaction) {
       ancestors.push(this._transaction);
       if (this._transaction._db) {
         ancestors.push(this._transaction._db);
       }
     }
 
-    if (ancestors.length > 0 && !this._suppressBubble) {
+    if (ancestors.length > 0) {
       return idbDispatchEvent(this, ancestors, event);
     }
 
     // Simple dispatch with on* handler (for IDBOpenDBRequest without transaction)
-    const handler = (this as any)['on' + event.type];
-    if (typeof handler === 'function') {
-      this.addEventListener(event.type, handler, { once: true });
-    }
-    const result = super.dispatchEvent(event);
-    if (typeof handler === 'function') {
-      this.removeEventListener(event.type, handler);
-    }
-    return result;
+    return idbDispatchEvent(this, [], event);
   }
 
   // Event handlers

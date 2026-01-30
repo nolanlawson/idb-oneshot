@@ -50,24 +50,11 @@ export class IDBTransaction extends EventTarget {
   dispatchEvent(event: Event): boolean {
     // Build ancestor path: transaction → database
     const ancestors: EventTarget[] = [];
-    if (event.bubbles && !event.cancelBubble && this._db) {
+    if (event.bubbles && this._db) {
       ancestors.push(this._db);
     }
 
-    if (ancestors.length > 0) {
-      return idbDispatchEvent(this, ancestors, event);
-    }
-
-    // Simple dispatch with on* handler
-    const handler = (this as any)['on' + event.type];
-    if (typeof handler === 'function') {
-      this.addEventListener(event.type, handler, { once: true });
-    }
-    const result = super.dispatchEvent(event);
-    if (typeof handler === 'function') {
-      this.removeEventListener(event.type, handler);
-    }
-    return result;
+    return idbDispatchEvent(this, ancestors, event);
   }
 
   constructor(db: any, storeNames: string[], mode: IDBTransactionMode) {
@@ -134,7 +121,10 @@ export class IDBTransaction extends EventTarget {
     // Don't set _state to 'finished' yet - it transitions through cleanup.
     // Set to 'inactive' so operations see it as "not active" but still "running".
     this._state = 'inactive';
-    this._error = new DOMException('The transaction was aborted.', 'AbortError');
+    // Only set error to AbortError if not already set (e.g., by auto-abort from ConstraintError)
+    if (!this._error) {
+      this._error = new DOMException('The transaction was aborted.', 'AbortError');
+    }
 
     // Rollback SQLite savepoint
     if (this._savepointStarted) {
@@ -449,5 +439,51 @@ export class IDBTransaction extends EventTarget {
     if (this._state === 'active') {
       this._state = 'inactive';
     }
+  }
+
+  /**
+   * Dispatch a request's event with proper IDB semantics:
+   * - Transaction is set active before dispatch
+   * - Transaction stays active through the microtask checkpoint
+   * - If an exception is thrown in any handler, the transaction aborts
+   * - For error events: if not preventDefault'd, auto-abort with request's error as tx.error
+   * - Deactivation + requestFinished happen after microtask checkpoint
+   */
+  _dispatchRequestEvent(request: IDBRequest, event: Event): void {
+    if (this._aborted || this._state === 'finished') {
+      this._requestFinished();
+      return;
+    }
+
+    this._state = 'active';
+
+    const notPrevented = request.dispatchEvent(event);
+    const exceptionThrown = !!(event as any)._exceptionThrown;
+
+    if (exceptionThrown) {
+      // Per spec: if an exception was thrown during dispatch, abort the transaction
+      // (event handlers may have already changed state via abort()/commit())
+      if (!this._aborted && (this._state as string) !== 'finished') {
+        this._error = new DOMException('The transaction was aborted.', 'AbortError');
+        this.abort();
+      }
+      return;
+    }
+
+    if (event.type === 'error' && notPrevented) {
+      // Per spec: if error event was not preventDefault'd, abort the transaction
+      // Set tx.error to the request's error (e.g., ConstraintError), not AbortError
+      if (!this._aborted && (this._state as string) !== 'finished') {
+        this._error = request._error;
+        this.abort();
+        return;
+      }
+    }
+
+    // Keep transaction active through microtask checkpoint, then deactivate
+    queueMicrotask(() => queueMicrotask(() => {
+      this._deactivate();
+      this._requestFinished();
+    }));
   }
 }

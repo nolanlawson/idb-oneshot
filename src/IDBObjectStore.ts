@@ -434,21 +434,13 @@ export class IDBObjectStore {
       },
       () => {
         // === Event dispatch ===
-        store._transaction._state = 'active';
         if (request._constraintError) {
           const event = new Event('error', { bubbles: true, cancelable: true });
-          const notPrevented = request.dispatchEvent(event);
-          // Per spec: if error event is not preventDefault'd, abort the transaction
-          if (notPrevented && !store._transaction._aborted && store._transaction._state !== 'finished') {
-            store._transaction.abort();
-            return;
-          }
+          store._transaction._dispatchRequestEvent(request, event);
         } else {
           const event = new Event('success', { bubbles: false, cancelable: false });
-          request.dispatchEvent(event);
+          store._transaction._dispatchRequestEvent(request, event);
         }
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
       }
     );
 
@@ -488,11 +480,8 @@ export class IDBObjectStore {
         request._result = resultValue;
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -539,11 +528,8 @@ export class IDBObjectStore {
         }
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -589,11 +575,8 @@ export class IDBObjectStore {
         request._result = undefined;
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -621,11 +604,8 @@ export class IDBObjectStore {
         request._result = undefined;
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -687,11 +667,8 @@ export class IDBObjectStore {
         request._result = cnt;
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -902,11 +879,8 @@ export class IDBObjectStore {
         request._result = results;
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -944,11 +918,8 @@ export class IDBObjectStore {
         request._result = results;
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -987,11 +958,8 @@ export class IDBObjectStore {
         request._result = results;
       },
       () => {
-        store._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        store._transaction._deactivate();
-        store._transaction._requestFinished();
+        store._transaction._dispatchRequestEvent(request, event);
       }
     );
 

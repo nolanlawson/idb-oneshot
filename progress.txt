@@ -525,4 +525,57 @@ Phase 10: Structured Clone + Key Generator + Key Path Edge Cases — COMPLETE
   - Overall WPT pass rate: 1017/1234 subtests (82.4%), up from 739/1077 (68.6%)
   - npx tsc --noEmit passes clean
 
-Next: Phase 11 — Event Bubbling + Error Handling
+Phase 11: Event Bubbling + Error Handling — COMPLETE
+  - Rewrote idbDispatchEvent() in scheduling.ts for exception-safe event dispatch:
+    - invokeListeners() wraps each listener call in try/catch; exceptions are caught
+      and reported but do not prevent subsequent listeners from being called
+    - New invokeTargetListeners() handles target-phase dispatch with same try/catch pattern
+    - Replaced native EventTarget.dispatchEvent calls with custom listener invocation
+      for consistent exception handling across all IDB event targets
+    - addEventListener wrapper catches errors from Node's native addEventListener
+      (handles handleEvent getter throws during registration)
+    - idbDispatchEvent sets _exceptionThrown flag on events for callers to check
+    - reportListenerException() silently swallows errors (IDB spec says abort, not crash)
+  - Created IDBTransaction._dispatchRequestEvent() centralized dispatch helper:
+    - Sets transaction active before dispatch
+    - Checks for exceptions → aborts transaction with AbortError
+    - Checks for unhandled error events (not preventDefault'd) → aborts with request's error
+    - Keeps transaction active through microtask checkpoint via queueMicrotask→queueMicrotask
+    - Deactivation + requestFinished happen after microtask checkpoint completes
+  - Updated all event dispatch sites across IDBObjectStore, IDBIndex, IDBCursor:
+    - All 15+ dispatch callbacks now use _dispatchRequestEvent instead of manual pattern
+    - Removed redundant _state = 'active' / _deactivate() / _requestFinished() from each callback
+  - Updated IDBRequest.dispatchEvent:
+    - Removed _suppressBubble mechanism; all dispatches go through idbDispatchEvent
+    - Simplified to always use idbDispatchEvent with appropriate ancestor list
+  - Updated IDBTransaction.dispatchEvent:
+    - Simplified to always use idbDispatchEvent
+  - Updated IDBDatabase.dispatchEvent:
+    - Simplified to always use idbDispatchEvent (added import)
+  - Fixed error-attributes: tx.error preserves request's error (e.g., ConstraintError):
+    - _dispatchRequestEvent sets this._error = request._error BEFORE calling abort()
+    - abort() only sets AbortError if _error is not already set
+  - Fixed upgradeneeded exception handling in IDBFactory._runOpenSteps:
+    - Checks _exceptionThrown on upgradeneeded event after dispatch
+    - If exception thrown, aborts upgrade transaction immediately
+  - WPT results (Phase 11 target tests — 37/40 subtests passing):
+    - event-dispatch-active-flag.any.js: 4/4 PASS (was 0/4)
+    - fire-error-event-exception.any.js: 17/17 PASS (was 0/0 ERROR)
+    - fire-success-event-exception.any.js: 6/6 PASS (was 0/0 ERROR)
+    - fire-upgradeneeded-event-exception.any.js: 6/6 PASS (was 0/0 ERROR)
+    - error-attributes.any.js: 1/1 PASS (was 0/1)
+    - request_bubble-and-capture.any.js: 1/1 PASS (unchanged)
+    - transaction_bubble-and-capture.any.js: 1/1 PASS (unchanged)
+    - idbrequest-onupgradeneeded.any.js: 1/4 PASS (unchanged, 3 fail: require blocked
+      connection/open request queue — Phase 12 upgrade lifecycle)
+    - idbrequest_error.any.js: 1/1 PASS (unchanged)
+    - idbrequest_result.any.js: 1/1 PASS (unchanged)
+  - Bonus improvements from microtask-based deactivation:
+    - Many tests benefit from transaction staying active through microtask checkpoint
+    - structured-clone.any.js: improved from 4/124 to significant gains
+      (promise_test pattern now works because tx stays active through microtasks)
+  - No regressions in previously passing tests
+  - Overall WPT pass rate: 1184/1272 subtests (93.1%), up from 1017/1234 (82.4%)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 12 — Upgrade Transaction Lifecycle

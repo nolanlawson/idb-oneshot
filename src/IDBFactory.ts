@@ -175,6 +175,12 @@ export class IDBFactory {
         });
         request.dispatchEvent(upgradeEvent);
 
+        // Per spec: if an exception was thrown during upgradeneeded dispatch, abort the transaction
+        if ((upgradeEvent as any)._exceptionThrown && !tx._aborted) {
+          tx.abort();
+          return;
+        }
+
         // After upgradeneeded handlers run, deactivate transaction
         // Use queueMicrotask to allow sync handlers to complete
         queueMicrotask(() => {

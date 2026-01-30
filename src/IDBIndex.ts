@@ -289,11 +289,8 @@ export class IDBIndex {
         request._result = resultValue;
       },
       () => {
-        idx._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        idx._transaction._deactivate();
-        idx._transaction._requestFinished();
+        idx._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -330,11 +327,8 @@ export class IDBIndex {
         request._result = resultKey;
       },
       () => {
-        idx._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        idx._transaction._deactivate();
-        idx._transaction._requestFinished();
+        idx._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -385,11 +379,8 @@ export class IDBIndex {
         request._result = cnt;
       },
       () => {
-        idx._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        idx._transaction._deactivate();
-        idx._transaction._requestFinished();
+        idx._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -445,11 +436,8 @@ export class IDBIndex {
         request._result = results;
       },
       () => {
-        idx._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        idx._transaction._deactivate();
-        idx._transaction._requestFinished();
+        idx._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -503,11 +491,8 @@ export class IDBIndex {
         request._result = results;
       },
       () => {
-        idx._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        idx._transaction._deactivate();
-        idx._transaction._requestFinished();
+        idx._transaction._dispatchRequestEvent(request, event);
       }
     );
 
@@ -561,11 +546,8 @@ export class IDBIndex {
         request._result = results;
       },
       () => {
-        idx._transaction._state = 'active';
         const event = new Event('success', { bubbles: false, cancelable: false });
-        request.dispatchEvent(event);
-        idx._transaction._deactivate();
-        idx._transaction._requestFinished();
+        idx._transaction._dispatchRequestEvent(request, event);
       }
     );
 

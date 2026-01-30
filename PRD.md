@@ -209,7 +209,7 @@ Uses SQLite `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for abort semantics.
 ### Phase 10: Structured Clone + Key Generator + Key Path Edge Cases ✅
 **Target tests**: `structured-clone.any.js`, `structured-clone-transaction-state.any.js`, `clone-before-keypath-eval.any.js`, `nested-cloning-*.any.js` (4 files), `value.any.js`, `value_recursive.any.js`, `keygenerator.any.js`, `keypath.any.js`, `keypath-exceptions.any.js`, `keypath-special-identifiers.any.js`, `keypath_invalid.any.js`, `keypath_maxsize.any.js`
 
-### Phase 11: Event Bubbling + Error Handling
+### Phase 11: Event Bubbling + Error Handling ✅
 **Target tests**: `event-dispatch-active-flag.any.js`, `fire-error-event-exception.any.js`, `fire-success-event-exception.any.js`, `fire-upgradeneeded-event-exception.any.js`, `error-attributes.any.js`, `request_bubble-and-capture.any.js`, `transaction_bubble-and-capture.any.js`, `idbrequest-onupgradeneeded.any.js`, `idbrequest_error.any.js`, `idbrequest_result.any.js`
 
 ### Phase 12: Upgrade Transaction Lifecycle

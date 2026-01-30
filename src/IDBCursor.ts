@@ -331,11 +331,8 @@ export class IDBCursor {
         this._gotValue = true;
         this._continueCalled = false;
       }
-      transaction._state = 'active';
       const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      transaction._deactivate();
-      transaction._requestFinished();
+      transaction._dispatchRequestEvent(request, event);
     });
   }
 
@@ -710,11 +707,8 @@ export function openObjectStoreCursor(
       }
     },
     () => {
-      transaction._state = 'active';
       const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      transaction._deactivate();
-      transaction._requestFinished();
+      transaction._dispatchRequestEvent(request, event);
     }
   );
 
@@ -806,11 +800,8 @@ export function openIndexCursor(
       }
     },
     () => {
-      transaction._state = 'active';
       const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      transaction._deactivate();
-      transaction._requestFinished();
+      transaction._dispatchRequestEvent(request, event);
     }
   );
 

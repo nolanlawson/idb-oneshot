@@ -4,7 +4,7 @@ import { DOMStringList } from './DOMStringList.ts';
 import { IDBTransaction } from './IDBTransaction.ts';
 import { IDBObjectStore, isValidKeyPath } from './IDBObjectStore.ts';
 import type { SQLiteBackend } from './sqlite-backend.ts';
-import { initEventTarget } from './scheduling.ts';
+import { initEventTarget, idbDispatchEvent } from './scheduling.ts';
 
 export class IDBDatabase extends EventTarget {
   _name: string;
@@ -24,15 +24,7 @@ export class IDBDatabase extends EventTarget {
   onversionchange: ((this: IDBDatabase, ev: Event) => any) | null = null;
 
   dispatchEvent(event: Event): boolean {
-    const handler = (this as any)['on' + event.type];
-    if (typeof handler === 'function') {
-      this.addEventListener(event.type, handler, { once: true });
-    }
-    const result = super.dispatchEvent(event);
-    if (typeof handler === 'function') {
-      this.removeEventListener(event.type, handler);
-    }
-    return result;
+    return idbDispatchEvent(this, [], event);
   }
 
   constructor(name: string, version: number, backend: SQLiteBackend) {
