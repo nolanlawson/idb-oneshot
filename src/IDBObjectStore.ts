@@ -1,10 +1,11 @@
 // IDBObjectStore implementation
 
 import { DOMStringList } from './DOMStringList.ts';
+import { openObjectStoreCursor } from './IDBCursor.ts';
 import { IDBIndex } from './IDBIndex.ts';
 import { IDBKeyRange } from './IDBKeyRange.ts';
 import { IDBRequest } from './IDBRequest.ts';
-import { encodeKey, valueToKey, valueToKeyOrThrow } from './keys.ts';
+import { encodeKey, valueToKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
 import { queueTask } from './scheduling.ts';
 import type { IDBValidKey } from './types.ts';
 
@@ -45,6 +46,8 @@ function queryToRange(query: any): { lower: Uint8Array | null; upper: Uint8Array
 }
 
 export class IDBObjectStore {
+  get [Symbol.toStringTag]() { return 'IDBObjectStore'; }
+
   _transaction: any; // IDBTransaction
   _name: string;
   _keyPath: string | string[] | null;
@@ -607,13 +610,22 @@ export class IDBObjectStore {
     this._indexNamesCache = null;
   }
 
-  // Stubs for later phases
-  openCursor(_query?: any, _direction?: string): IDBRequest {
-    throw new DOMException('Not yet implemented', 'InvalidStateError');
+  openCursor(query?: any, direction?: IDBCursorDirection): IDBRequest {
+    this._ensureValid();
+    const dir = direction ?? 'next';
+    if (!['next', 'nextunique', 'prev', 'prevunique'].includes(dir)) {
+      throw new TypeError(`Failed to execute 'openCursor' on 'IDBObjectStore': The provided value '${dir}' is not a valid enum value of type IDBCursorDirection.`);
+    }
+    return openObjectStoreCursor(this, this._transaction, query, dir, false);
   }
 
-  openKeyCursor(_query?: any, _direction?: string): IDBRequest {
-    throw new DOMException('Not yet implemented', 'InvalidStateError');
+  openKeyCursor(query?: any, direction?: IDBCursorDirection): IDBRequest {
+    this._ensureValid();
+    const dir = direction ?? 'next';
+    if (!['next', 'nextunique', 'prev', 'prevunique'].includes(dir)) {
+      throw new TypeError(`Failed to execute 'openKeyCursor' on 'IDBObjectStore': The provided value '${dir}' is not a valid enum value of type IDBCursorDirection.`);
+    }
+    return openObjectStoreCursor(this, this._transaction, query, dir, true);
   }
 
   index(name: string): IDBIndex {
@@ -829,64 +841,4 @@ export class IDBObjectStore {
   }
 }
 
-/** Decode a binary-encoded key back into an IDBValidKey */
-function decodeKeyFromBuffer(buf: Buffer | Uint8Array): IDBValidKey {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  const { key } = decodeKeyAt(bytes, 0);
-  return key;
-}
-
-function decodeKeyAt(bytes: Uint8Array, offset: number): { key: IDBValidKey; nextOffset: number } {
-  const tag = bytes[offset];
-  offset++;
-
-  if (tag === 0x10 || tag === 0x20) {
-    // Number or Date
-    const dbytes = new Uint8Array(8);
-    dbytes.set(bytes.subarray(offset, offset + 8));
-    if (dbytes[0] & 0x80) {
-      dbytes[0] ^= 0x80;
-    } else {
-      for (let i = 0; i < 8; i++) dbytes[i] ^= 0xff;
-    }
-    const view = new DataView(dbytes.buffer, dbytes.byteOffset, 8);
-    const value = view.getFloat64(0, false);
-    if (tag === 0x20) {
-      return { key: new Date(value), nextOffset: offset + 8 };
-    }
-    return { key: value, nextOffset: offset + 8 };
-  }
-
-  if (tag === 0x30) {
-    // String: UTF-16 big-endian code units to end of buffer
-    const chars: number[] = [];
-    let pos = offset;
-    while (pos + 1 < bytes.length) {
-      const code = (bytes[pos] << 8) | bytes[pos + 1];
-      chars.push(code);
-      pos += 2;
-    }
-    return { key: String.fromCharCode(...chars), nextOffset: pos };
-  }
-
-  if (tag === 0x40) {
-    // Binary: raw bytes to end
-    const data = bytes.slice(offset).buffer;
-    return { key: data as ArrayBuffer, nextOffset: bytes.length };
-  }
-
-  if (tag === 0x50) {
-    // Array
-    const elements: IDBValidKey[] = [];
-    let pos = offset;
-    while (pos < bytes.length && bytes[pos] !== 0x00) {
-      const { key, nextOffset } = decodeKeyAt(bytes, pos);
-      elements.push(key);
-      pos = nextOffset;
-    }
-    if (pos < bytes.length) pos++;
-    return { key: elements, nextOffset: pos };
-  }
-
-  throw new Error(`Unknown key tag: 0x${tag.toString(16)}`);
-}
+const decodeKeyFromBuffer = decodeKey;

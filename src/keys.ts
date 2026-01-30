@@ -203,16 +203,34 @@ function encodeKeyInto(key: IDBValidKey, parts: Uint8Array[]): void {
   } else if (typeof key === 'string') {
     parts.push(new Uint8Array([TAG_STRING]));
     // Encode as UTF-16 code units, big-endian uint16
-    const encoded = new Uint8Array(key.length * 2);
+    // Escape U+0000 as 0x00 0x01 so 0x00 0x00 can serve as terminator
+    const bytes: number[] = [];
     for (let i = 0; i < key.length; i++) {
       const code = key.charCodeAt(i);
-      encoded[i * 2] = (code >> 8) & 0xff;
-      encoded[i * 2 + 1] = code & 0xff;
+      const hi = (code >> 8) & 0xff;
+      const lo = code & 0xff;
+      if (code === 0) {
+        bytes.push(0x00, 0x01); // escape NUL
+      } else {
+        bytes.push(hi, lo);
+      }
     }
-    parts.push(encoded);
+    bytes.push(0x00, 0x00); // terminator
+    parts.push(new Uint8Array(bytes));
   } else if (key instanceof ArrayBuffer) {
     parts.push(new Uint8Array([TAG_BINARY]));
-    parts.push(new Uint8Array(key));
+    // Escape 0x00 as 0x00 0x01 so 0x00 0x00 can serve as terminator
+    const src = new Uint8Array(key);
+    const bytes: number[] = [];
+    for (let i = 0; i < src.length; i++) {
+      if (src[i] === 0x00) {
+        bytes.push(0x00, 0x01); // escape
+      } else {
+        bytes.push(src[i]);
+      }
+    }
+    bytes.push(0x00, 0x00); // terminator
+    parts.push(new Uint8Array(bytes));
   } else if (Array.isArray(key)) {
     parts.push(new Uint8Array([TAG_ARRAY]));
     for (const element of key) {
@@ -220,4 +238,89 @@ function encodeKeyInto(key: IDBValidKey, parts: Uint8Array[]): void {
     }
     parts.push(new Uint8Array([TAG_ARRAY_TERMINATOR]));
   }
+}
+
+/** Decode a binary-encoded key back into an IDBValidKey */
+export function decodeKey(buf: Buffer | Uint8Array): IDBValidKey {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const { key } = decodeKeyAt(bytes, 0);
+  return key;
+}
+
+function decodeKeyAt(bytes: Uint8Array, offset: number): { key: IDBValidKey; nextOffset: number } {
+  const tag = bytes[offset];
+  offset++;
+
+  if (tag === TAG_NUMBER || tag === TAG_DATE) {
+    const dbytes = new Uint8Array(8);
+    dbytes.set(bytes.subarray(offset, offset + 8));
+    if (dbytes[0] & 0x80) {
+      dbytes[0] ^= 0x80;
+    } else {
+      for (let i = 0; i < 8; i++) dbytes[i] ^= 0xff;
+    }
+    const view = new DataView(dbytes.buffer, dbytes.byteOffset, 8);
+    const value = view.getFloat64(0, false);
+    if (tag === TAG_DATE) {
+      return { key: new Date(value), nextOffset: offset + 8 };
+    }
+    return { key: value, nextOffset: offset + 8 };
+  }
+
+  if (tag === TAG_STRING) {
+    // Read UTF-16 BE pairs until 0x00 0x00 terminator
+    // 0x00 0x01 is escaped NUL character (U+0000)
+    const chars: number[] = [];
+    let pos = offset;
+    while (pos + 1 < bytes.length) {
+      if (bytes[pos] === 0x00 && bytes[pos + 1] === 0x00) {
+        pos += 2; // skip terminator
+        break;
+      }
+      if (bytes[pos] === 0x00 && bytes[pos + 1] === 0x01) {
+        chars.push(0); // unescaped NUL
+        pos += 2;
+        continue;
+      }
+      const code = (bytes[pos] << 8) | bytes[pos + 1];
+      chars.push(code);
+      pos += 2;
+    }
+    return { key: String.fromCharCode(...chars), nextOffset: pos };
+  }
+
+  if (tag === TAG_BINARY) {
+    // Read bytes until 0x00 0x00 terminator
+    // 0x00 0x01 is escaped 0x00 byte
+    const data: number[] = [];
+    let pos = offset;
+    while (pos < bytes.length) {
+      if (pos + 1 < bytes.length && bytes[pos] === 0x00 && bytes[pos + 1] === 0x00) {
+        pos += 2; // skip terminator
+        break;
+      }
+      if (pos + 1 < bytes.length && bytes[pos] === 0x00 && bytes[pos + 1] === 0x01) {
+        data.push(0); // unescaped 0x00
+        pos += 2;
+        continue;
+      }
+      data.push(bytes[pos]);
+      pos++;
+    }
+    return { key: new Uint8Array(data).buffer as ArrayBuffer, nextOffset: pos };
+  }
+
+  if (tag === TAG_ARRAY) {
+    const elements: IDBValidKey[] = [];
+    let pos = offset;
+    while (pos < bytes.length && bytes[pos] !== TAG_ARRAY_TERMINATOR) {
+      const { key, nextOffset } = decodeKeyAt(bytes, pos);
+      elements.push(key);
+      pos = nextOffset;
+    }
+    if (pos < bytes.length) pos++; // skip terminator
+    return { key: elements, nextOffset: pos };
+  }
+
+  throw new Error(`Unknown key tag: 0x${tag.toString(16)}`);
 }

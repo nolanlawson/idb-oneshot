@@ -1,68 +1,13 @@
 // IDBIndex implementation
 
+import { openIndexCursor } from './IDBCursor.ts';
 import { IDBKeyRange } from './IDBKeyRange.ts';
 import { IDBRequest } from './IDBRequest.ts';
-import { encodeKey, valueToKeyOrThrow } from './keys.ts';
+import { encodeKey, valueToKeyOrThrow, decodeKey } from './keys.ts';
 import { queueTask } from './scheduling.ts';
 import type { IDBValidKey } from './types.ts';
 
-/** Decode a binary-encoded key back into an IDBValidKey */
-function decodeKeyFromBuffer(buf: Buffer | Uint8Array): IDBValidKey {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  const { key } = decodeKeyAt(bytes, 0);
-  return key;
-}
-
-function decodeKeyAt(bytes: Uint8Array, offset: number): { key: IDBValidKey; nextOffset: number } {
-  const tag = bytes[offset];
-  offset++;
-
-  if (tag === 0x10 || tag === 0x20) {
-    const dbytes = new Uint8Array(8);
-    dbytes.set(bytes.subarray(offset, offset + 8));
-    if (dbytes[0] & 0x80) {
-      dbytes[0] ^= 0x80;
-    } else {
-      for (let i = 0; i < 8; i++) dbytes[i] ^= 0xff;
-    }
-    const view = new DataView(dbytes.buffer, dbytes.byteOffset, 8);
-    const value = view.getFloat64(0, false);
-    if (tag === 0x20) {
-      return { key: new Date(value), nextOffset: offset + 8 };
-    }
-    return { key: value, nextOffset: offset + 8 };
-  }
-
-  if (tag === 0x30) {
-    const chars: number[] = [];
-    let pos = offset;
-    while (pos + 1 < bytes.length) {
-      const code = (bytes[pos] << 8) | bytes[pos + 1];
-      chars.push(code);
-      pos += 2;
-    }
-    return { key: String.fromCharCode(...chars), nextOffset: pos };
-  }
-
-  if (tag === 0x40) {
-    const data = bytes.slice(offset).buffer;
-    return { key: data as ArrayBuffer, nextOffset: bytes.length };
-  }
-
-  if (tag === 0x50) {
-    const elements: IDBValidKey[] = [];
-    let pos = offset;
-    while (pos < bytes.length && bytes[pos] !== 0x00) {
-      const { key, nextOffset } = decodeKeyAt(bytes, pos);
-      elements.push(key);
-      pos = nextOffset;
-    }
-    if (pos < bytes.length) pos++;
-    return { key: elements, nextOffset: pos };
-  }
-
-  throw new Error(`Unknown key tag: 0x${tag.toString(16)}`);
-}
+const decodeKeyFromBuffer = decodeKey;
 
 /**
  * Convert a query parameter to either an exact key or key range for index queries.
@@ -81,6 +26,8 @@ function queryToRange(query: any): { lower: Uint8Array | null; upper: Uint8Array
 }
 
 export class IDBIndex {
+  get [Symbol.toStringTag]() { return 'IDBIndex'; }
+
   _objectStore: any; // IDBObjectStore
   _name: string;
   _keyPath: string | string[];
@@ -313,35 +260,21 @@ export class IDBIndex {
     return request;
   }
 
-  openCursor(_query?: any, _direction?: string): IDBRequest {
+  openCursor(query?: any, direction?: IDBCursorDirection): IDBRequest {
     this._ensureValid();
-    // Stub - Phase 5
-    const request = this._transaction._createRequest(this);
-    request._readyState = 'done';
-    request._result = null;
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
-    return request;
+    const dir = direction ?? 'next';
+    if (!['next', 'nextunique', 'prev', 'prevunique'].includes(dir)) {
+      throw new TypeError(`Failed to execute 'openCursor' on 'IDBIndex': The provided value '${dir}' is not a valid enum value of type IDBCursorDirection.`);
+    }
+    return openIndexCursor(this, this._transaction, query, dir, false);
   }
 
-  openKeyCursor(_query?: any, _direction?: string): IDBRequest {
+  openKeyCursor(query?: any, direction?: IDBCursorDirection): IDBRequest {
     this._ensureValid();
-    // Stub - Phase 5
-    const request = this._transaction._createRequest(this);
-    request._readyState = 'done';
-    request._result = null;
-    queueTask(() => {
-      this._transaction._state = 'active';
-      const event = new Event('success', { bubbles: false, cancelable: false });
-      request.dispatchEvent(event);
-      this._transaction._deactivate();
-      this._transaction._requestFinished();
-    });
-    return request;
+    const dir = direction ?? 'next';
+    if (!['next', 'nextunique', 'prev', 'prevunique'].includes(dir)) {
+      throw new TypeError(`Failed to execute 'openKeyCursor' on 'IDBIndex': The provided value '${dir}' is not a valid enum value of type IDBCursorDirection.`);
+    }
+    return openIndexCursor(this, this._transaction, query, dir, true);
   }
 }

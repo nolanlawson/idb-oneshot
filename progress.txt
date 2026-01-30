@@ -171,4 +171,72 @@ Phase 4: Indexes — COMPLETE
     - idbobjectstore_createIndex.any.js: 14/21 PASS (was 13/21, fixed ConstraintError ordering)
   - npx tsc --noEmit passes clean
 
-Next: Phase 5 — Cursors
+Phase 5: Cursors — COMPLETE
+  - Implemented full IDBCursor class (src/IDBCursor.ts):
+    - Properties: key, primaryKey, direction, source, request
+    - continue(key?): advance to next record, optional key target
+    - advance(count): skip N records forward/backward
+    - continuePrimaryKey(key, primaryKey): advance index cursor to specific key+primaryKey
+    - update(value): update current record via cursor
+    - delete(): delete current record via cursor
+    - Proper cursor lifecycle: _gotValue/_continueCalled flags set asynchronously in event callback
+    - Source validity checks (deleted store/index detection)
+    - Request reuse: same IDBRequest fires success for each iteration
+    - Request source set to cursor for update()/delete() per spec
+  - Implemented IDBCursorWithValue (extends IDBCursor with value getter)
+  - Added openObjectStoreCursor/openIndexCursor factory functions
+  - Updated IDBObjectStore (src/IDBObjectStore.ts):
+    - openCursor(query?, direction?): returns IDBCursorWithValue via IDBRequest
+    - openKeyCursor(query?, direction?): returns IDBCursor (no value) via IDBRequest
+    - Added Symbol.toStringTag for correct toString() output
+    - Query validation moved before _createRequest to avoid polluting pending count on error
+  - Updated IDBIndex (src/IDBIndex.ts):
+    - openCursor(query?, direction?): opens cursor over index entries
+    - openKeyCursor(query?, direction?): opens key-only cursor over index
+    - Added Symbol.toStringTag
+  - Added SQLite backend cursor methods (src/sqlite-backend.ts):
+    - getRecordsForCursor(): retrieves sorted records within range for object store cursors
+    - getIndexEntriesForCursor(): retrieves sorted index entries with JOIN for index cursors
+    - Correct sort order for prevunique: index key DESC, primary key ASC
+  - Fixed key encoding (src/keys.ts):
+    - String encoding: added 0x00 0x00 terminator with NUL escape (0x00 0x01)
+    - Binary encoding: added 0x00 0x00 terminator with byte stuffing
+    - Added exported decodeKey() function, eliminating duplicated decoders in IDBObjectStore/IDBIndex
+    - Array keys with string/binary elements now decode correctly
+  - Added IDBCursorDirection global type declaration (src/types.ts)
+  - WPT results (100/100 Phase 5 cursor subtests passing across 25 test files):
+    - idbcursor-continue.any.js: 6/6 PASS
+    - idbcursor-advance.any.js: 6/6 PASS
+    - idbcursor-direction.any.js: 5/5 PASS
+    - idbcursor-direction-index.any.js: 4/4 PASS
+    - idbcursor-direction-objectstore.any.js: 4/4 PASS
+    - idbcursor-direction-index-keyrange.any.js: 4/4 PASS
+    - idbcursor-direction-objectstore-keyrange.any.js: 4/4 PASS
+    - idbcursor-key.any.js: 3/3 PASS
+    - idbcursor-primarykey.any.js: 3/3 PASS
+    - idbcursor-source.any.js: 2/2 PASS
+    - idbcursor-reused.any.js: 1/1 PASS
+    - idbcursor-request.any.js: 4/4 PASS
+    - idbcursor-request-source.any.js: 8/8 PASS
+    - idbcursor_advance_index.any.js: 8/8 PASS
+    - idbcursor_advance_objectstore.any.js: 5/5 PASS
+    - idbcursor_continue_index.any.js: 10/10 PASS
+    - idbcursor_continue_objectstore.any.js: 8/8 PASS
+    - idbcursor_iterating.any.js: 1/1 PASS
+    - cursor-overloads.any.js: 1/1 PASS
+    - idbobjectstore_openCursor.any.js: 1/1 PASS
+    - idbobjectstore_openCursor_invalid.any.js: 1/1 PASS
+    - idbobjectstore_openKeyCursor.any.js: 5/5 PASS
+    - idbindex_openCursor.any.js: 3/3 PASS
+    - idbindex_openKeyCursor.any.js: 4/4 PASS
+    - idbindex_reverse_cursor.any.js: 2/2 PASS
+  - Bonus improvements from cursor support:
+    - keyorder.any.js: now 24/24 PASS (was 12/24, needed cursor iteration)
+    - idbdatabase_createObjectStore.any.js: now 27/27 PASS (was 26/27, needed index())
+    - idbobjectstore_add.any.js: now 16/16 PASS (was 13/16, needed openCursor)
+    - idbobjectstore_put.any.js: now 16/16 PASS (was 13/16, needed openCursor)
+    - idbobjectstore_clear.any.js: now 4/4 PASS (was 2/4, needed openCursor/index)
+    - idbindex_keyPath.any.js: now 3/3 PASS (was 1/3, needed openCursor)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 6 — Transaction Lifecycle + Scheduling

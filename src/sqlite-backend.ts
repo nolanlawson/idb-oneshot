@@ -474,6 +474,70 @@ export class SQLiteBackend {
     ).run(indexId, Buffer.from(key), Buffer.from(primaryKey));
   }
 
+  /** Get records from an object store for cursor iteration */
+  getRecordsForCursor(
+    dbName: string,
+    storeId: number,
+    lower: Buffer | Uint8Array | null,
+    upper: Buffer | Uint8Array | null,
+    lowerOpen: boolean,
+    upperOpen: boolean,
+    direction: 'next' | 'prev' | 'nextunique' | 'prevunique'
+  ): Array<{ key: Buffer; value: Buffer }> {
+    const db = this.getDatabase(dbName);
+    const { sql, params } = this._buildRangeQuery(
+      'SELECT key, value FROM records',
+      storeId, lower, upper, lowerOpen, upperOpen
+    );
+    const order = (direction === 'prev' || direction === 'prevunique') ? 'DESC' : 'ASC';
+    return db.prepare(sql + ` ORDER BY key ${order}`).all(...params) as Array<{ key: Buffer; value: Buffer }>;
+  }
+
+  /** Get index entries for cursor iteration */
+  getIndexEntriesForCursor(
+    dbName: string,
+    indexId: number,
+    storeId: number,
+    lower: Buffer | Uint8Array | null,
+    upper: Buffer | Uint8Array | null,
+    lowerOpen: boolean,
+    upperOpen: boolean,
+    direction: 'next' | 'prev' | 'nextunique' | 'prevunique'
+  ): Array<{ index_key: Buffer; primary_key: Buffer; value: Buffer }> {
+    const db = this.getDatabase(dbName);
+    const conditions: string[] = ['ie.index_id = ?'];
+    const params: any[] = [storeId, indexId];
+    if (lower !== null) {
+      conditions.push(lowerOpen ? 'ie.key > ?' : 'ie.key >= ?');
+      params.push(Buffer.from(lower));
+    }
+    if (upper !== null) {
+      conditions.push(upperOpen ? 'ie.key < ?' : 'ie.key <= ?');
+      params.push(Buffer.from(upper));
+    }
+    let order: string;
+    if (direction === 'prev') {
+      order = 'ie.key DESC, ie.primary_key DESC';
+    } else if (direction === 'prevunique') {
+      order = 'ie.key DESC, ie.primary_key ASC';
+    } else {
+      order = 'ie.key ASC, ie.primary_key ASC';
+    }
+    const sql = 'SELECT ie.key as index_key, ie.primary_key, r.value FROM index_entries ie ' +
+      'JOIN records r ON r.object_store_id = ? AND r.key = ie.primary_key ' +
+      'WHERE ' + conditions.join(' AND ') + ` ORDER BY ${order}`;
+    return db.prepare(sql).all(...params) as Array<{ index_key: Buffer; primary_key: Buffer; value: Buffer }>;
+  }
+
+  /** Get a single record by exact primary key (returns key + value) */
+  getRecordWithKey(dbName: string, storeId: number, key: Buffer | Uint8Array): { key: Buffer; value: Buffer } | null {
+    const db = this.getDatabase(dbName);
+    const row = db
+      .prepare('SELECT key, value FROM records WHERE object_store_id = ? AND key = ?')
+      .get(storeId, Buffer.from(key)) as { key: Buffer; value: Buffer } | undefined;
+    return row ?? null;
+  }
+
   /** Close all connections */
   closeAll(): void {
     for (const [name, db] of this._openDbs) {
