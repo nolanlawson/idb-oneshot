@@ -199,7 +199,7 @@ export class SQLiteBackend {
     ).run(storeId, Buffer.from(key), Buffer.from(value));
   }
 
-  /** Get a record from an object store */
+  /** Get a record from an object store by exact key */
   getRecord(dbName: string, storeId: number, key: Buffer | Uint8Array): Buffer | null {
     const db = this.getDatabase(dbName);
     const row = db
@@ -208,7 +208,18 @@ export class SQLiteBackend {
     return row ? row.value : null;
   }
 
-  /** Delete a record */
+  /** Get the first record within a key range */
+  getRecordInRange(dbName: string, storeId: number, lower: Buffer | Uint8Array | null, upper: Buffer | Uint8Array | null, lowerOpen: boolean, upperOpen: boolean): { key: Buffer; value: Buffer } | null {
+    const db = this.getDatabase(dbName);
+    const { sql, params } = this._buildRangeQuery(
+      'SELECT key, value FROM records',
+      storeId, lower, upper, lowerOpen, upperOpen
+    );
+    const row = db.prepare(sql + ' ORDER BY key ASC LIMIT 1').get(...params) as { key: Buffer; value: Buffer } | undefined;
+    return row ?? null;
+  }
+
+  /** Delete a record by exact key */
   deleteRecord(dbName: string, storeId: number, key: Buffer | Uint8Array): void {
     const db = this.getDatabase(dbName);
     db.prepare('DELETE FROM records WHERE object_store_id = ? AND key = ?').run(
@@ -217,12 +228,30 @@ export class SQLiteBackend {
     );
   }
 
-  /** Count records in an object store */
-  countRecords(dbName: string, storeId: number): number {
+  /** Delete records within a key range */
+  deleteRecordsInRange(dbName: string, storeId: number, lower: Buffer | Uint8Array | null, upper: Buffer | Uint8Array | null, lowerOpen: boolean, upperOpen: boolean): void {
     const db = this.getDatabase(dbName);
-    const row = db
-      .prepare('SELECT COUNT(*) as cnt FROM records WHERE object_store_id = ?')
-      .get(storeId) as { cnt: number };
+    const { sql, params } = this._buildRangeQuery(
+      'DELETE FROM records',
+      storeId, lower, upper, lowerOpen, upperOpen
+    );
+    db.prepare(sql).run(...params);
+  }
+
+  /** Count records in an object store, optionally within a range */
+  countRecords(dbName: string, storeId: number, lower?: Buffer | Uint8Array | null, upper?: Buffer | Uint8Array | null, lowerOpen?: boolean, upperOpen?: boolean): number {
+    const db = this.getDatabase(dbName);
+    if (lower === undefined && upper === undefined) {
+      const row = db
+        .prepare('SELECT COUNT(*) as cnt FROM records WHERE object_store_id = ?')
+        .get(storeId) as { cnt: number };
+      return row.cnt;
+    }
+    const { sql, params } = this._buildRangeQuery(
+      'SELECT COUNT(*) as cnt FROM records',
+      storeId, lower ?? null, upper ?? null, lowerOpen ?? false, upperOpen ?? false
+    );
+    const row = db.prepare(sql).get(...params) as { cnt: number };
     return row.cnt;
   }
 
@@ -230,6 +259,65 @@ export class SQLiteBackend {
   clearRecords(dbName: string, storeId: number): void {
     const db = this.getDatabase(dbName);
     db.prepare('DELETE FROM records WHERE object_store_id = ?').run(storeId);
+  }
+
+  /** Check if a unique index constraint would be violated */
+  checkUniqueIndexConstraint(dbName: string, indexId: number, indexKey: Buffer | Uint8Array, excludePrimaryKey?: Buffer | Uint8Array): boolean {
+    const db = this.getDatabase(dbName);
+    if (excludePrimaryKey) {
+      const row = db.prepare(
+        'SELECT 1 FROM index_entries WHERE index_id = ? AND key = ? AND primary_key != ? LIMIT 1'
+      ).get(indexId, Buffer.from(indexKey), Buffer.from(excludePrimaryKey));
+      return !!row;
+    }
+    const row = db.prepare(
+      'SELECT 1 FROM index_entries WHERE index_id = ? AND key = ? LIMIT 1'
+    ).get(indexId, Buffer.from(indexKey));
+    return !!row;
+  }
+
+  /** Delete index entries for a primary key */
+  deleteIndexEntriesForRecord(dbName: string, storeId: number, primaryKey: Buffer | Uint8Array): void {
+    const db = this.getDatabase(dbName);
+    db.prepare(
+      'DELETE FROM index_entries WHERE primary_key = ? AND index_id IN (SELECT id FROM indexes WHERE object_store_id = ?)'
+    ).run(Buffer.from(primaryKey), storeId);
+  }
+
+  /** Get all indexes for a store */
+  getIndexesForStore(dbName: string, storeId: number): Array<{ id: number; keyPath: string | string[]; unique: boolean; multiEntry: boolean }> {
+    const db = this.getDatabase(dbName);
+    const rows = db.prepare(
+      'SELECT id, key_path, unique_index, multi_entry FROM indexes WHERE object_store_id = ?'
+    ).all(storeId) as Array<{ id: number; key_path: string; unique_index: number; multi_entry: number }>;
+    return rows.map(r => ({
+      id: r.id,
+      keyPath: JSON.parse(r.key_path),
+      unique: r.unique_index !== 0,
+      multiEntry: r.multi_entry !== 0,
+    }));
+  }
+
+  /** Build a SQL query with range conditions */
+  private _buildRangeQuery(
+    prefix: string,
+    storeId: number,
+    lower: Buffer | Uint8Array | null,
+    upper: Buffer | Uint8Array | null,
+    lowerOpen: boolean,
+    upperOpen: boolean
+  ): { sql: string; params: any[] } {
+    const conditions: string[] = ['object_store_id = ?'];
+    const params: any[] = [storeId];
+    if (lower !== null) {
+      conditions.push(lowerOpen ? 'key > ?' : 'key >= ?');
+      params.push(Buffer.from(lower));
+    }
+    if (upper !== null) {
+      conditions.push(upperOpen ? 'key < ?' : 'key <= ?');
+      params.push(Buffer.from(upper));
+    }
+    return { sql: `${prefix} WHERE ${conditions.join(' AND ')}`, params };
   }
 
   /** Update auto-increment counter */

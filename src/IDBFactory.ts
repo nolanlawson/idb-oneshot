@@ -180,7 +180,7 @@ export class IDBFactory {
         queueMicrotask(() => {
           if (tx._state === 'active' && !tx._aborted) {
             tx._deactivate();
-            tx._requestFinished();
+            tx._maybeAutoCommit();
           }
         });
       } else {

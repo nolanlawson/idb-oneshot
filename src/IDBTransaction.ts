@@ -21,6 +21,7 @@ export class IDBTransaction extends EventTarget {
   _aborted: boolean = false;
   _objectStoreNames: DOMStringList;
   _requests: IDBRequest[] = [];
+  _pendingRequestCount: number = 0; // requests whose events haven't fired yet
   _savepointName: string;
   _savepointStarted: boolean = false;
   _objectStoreCache: Map<string, any> = new Map(); // SameObject cache
@@ -166,6 +167,7 @@ export class IDBTransaction extends EventTarget {
     request._source = source;
     request._transaction = this;
     this._requests.push(request);
+    this._pendingRequestCount++;
     return request;
   }
 
@@ -202,16 +204,17 @@ export class IDBTransaction extends EventTarget {
     });
   }
 
-  /** Called after a request's event handlers have run */
+  /** Called after a request's event has been dispatched */
   _requestFinished(): void {
-    // If no more pending operations and transaction is inactive, auto-commit
-    if (this._state === 'inactive' && !this._aborted) {
-      // Check if all requests are done
-      const allDone = this._requests.every(r => r._readyState === 'done');
-      if (allDone) {
-        this._state = 'committing';
-        this._commitWhenDone();
-      }
+    this._pendingRequestCount--;
+    this._maybeAutoCommit();
+  }
+
+  /** Check if the transaction should auto-commit */
+  _maybeAutoCommit(): void {
+    if (this._state === 'inactive' && !this._aborted && this._pendingRequestCount <= 0) {
+      this._state = 'committing';
+      this._commitWhenDone();
     }
   }
 

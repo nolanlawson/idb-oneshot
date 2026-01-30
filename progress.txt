@@ -87,4 +87,50 @@ Phase 2: IDBFactory.open() + Database Lifecycle — COMPLETE
     - keyorder.any.js: 12/24 (12 fail: require cursor — Phase 5)
   - npx tsc --noEmit passes clean
 
-Next: Phase 3 — Object Store CRUD
+Phase 3: Object Store CRUD — COMPLETE
+  - Implemented IDBKeyRange query support in get(), getKey(), delete(), count()
+    - All methods now accept both exact keys and IDBKeyRange objects
+    - Added queryToRange() helper for consistent key/range handling
+    - Added getRecordInRange(), deleteRecordsInRange() to SQLiteBackend with _buildRangeQuery helper
+    - count() now correctly filters by exact key or range
+  - Implemented key path validation (isValidKeyPath/isValidKeyPathString)
+    - createObjectStore now validates keyPath (SyntaxError for invalid paths)
+    - createObjectStore rejects autoIncrement + empty string keyPath (InvalidAccessError)
+    - createObjectStore rejects autoIncrement + array keyPath (InvalidAccessError)
+    - createIndex validates keyPath
+  - Fixed deleted object store detection
+    - _ensureValid() now checks _deleted flag before every operation
+    - deleteObjectStore() marks cached IDBObjectStore._deleted = true
+    - All operations (add/put/get/getKey/delete/clear/count/createIndex/deleteIndex) throw InvalidStateError on deleted stores
+  - Fixed getKey() argument validation
+    - Throws TypeError when called with no arguments (per spec)
+    - Returns decoded key from binary-encoded buffer for range queries
+    - Added decodeKeyFromBuffer/decodeKeyAt for binary key decoding
+  - Implemented unique index constraint enforcement
+    - checkUniqueIndexConstraint() in SQLiteBackend checks for duplicate index keys
+    - put/add check unique constraints before inserting and fire ConstraintError on violation
+    - createIndex with unique:true aborts transaction if existing data violates constraint
+  - Implemented index entry maintenance on put/add
+    - deleteIndexEntriesForRecord() clears old entries before replacement
+    - Adds new index entries for all indexes on the store after each put/add
+    - Multi-entry index support: arrays are expanded into individual entries
+    - _populateIndex() fills new index from existing records during createIndex
+  - Improved index() stub to return proper NotFoundError for missing indexes
+  - Fixed transaction auto-commit timing
+    - Added _pendingRequestCount to IDBTransaction for accurate tracking
+    - Separated _maybeAutoCommit() from _requestFinished() to avoid double-decrement
+    - Nested requests during event handlers (e.g., count inside upgradeneeded) now work correctly
+  - WPT results (93/102 subtests passing across Phase 3 target tests):
+    - idbdatabase_createObjectStore.any.js: 26/27 PASS (1 fail: requires index() — Phase 4)
+    - idbdatabase_deleteObjectStore.any.js: 3/3 PASS
+    - idbobjectstore_add.any.js: 13/16 PASS (3 fail: require openCursor — Phase 5)
+    - idbobjectstore_put.any.js: 13/16 PASS (3 fail: require openCursor — Phase 5)
+    - idbobjectstore_get.any.js: 7/7 PASS
+    - idbobjectstore_getKey.any.js: 17/17 PASS
+    - idbobjectstore_delete.any.js: 7/7 PASS
+    - idbobjectstore_clear.any.js: 2/4 PASS (2 fail: require openCursor/index — Phase 4/5)
+    - idbobjectstore_count.any.js: 4/4 PASS
+    - idbobjectstore_keyPath.any.js: 1/1 PASS
+  - npx tsc --noEmit passes clean
+
+Next: Phase 4 — Indexes

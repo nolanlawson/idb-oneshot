@@ -2,7 +2,7 @@
 
 import { DOMStringList } from './DOMStringList.ts';
 import { IDBTransaction } from './IDBTransaction.ts';
-import { IDBObjectStore } from './IDBObjectStore.ts';
+import { IDBObjectStore, isValidKeyPath } from './IDBObjectStore.ts';
 import type { SQLiteBackend } from './sqlite-backend.ts';
 
 export class IDBDatabase extends EventTarget {
@@ -88,10 +88,26 @@ export class IDBDatabase extends EventTarget {
       );
     }
 
-    const keyPath = options?.keyPath ?? null;
+    const keyPath = options?.keyPath !== undefined ? options.keyPath : null;
     const autoIncrement = options?.autoIncrement ?? false;
 
-    // Validate: autoIncrement with empty string or array keyPath is invalid
+    // Validate key path
+    if (keyPath !== null && keyPath !== undefined && !isValidKeyPath(keyPath)) {
+      throw new DOMException(
+        "The keyPath argument contains an invalid key path.",
+        'SyntaxError'
+      );
+    }
+
+    // Validate: autoIncrement with empty string keyPath is invalid
+    if (autoIncrement && keyPath === '') {
+      throw new DOMException(
+        "An object store cannot have autoIncrement and an empty string key path.",
+        'InvalidAccessError'
+      );
+    }
+
+    // Validate: autoIncrement with array keyPath is invalid
     if (autoIncrement && Array.isArray(keyPath)) {
       throw new DOMException(
         "An object store cannot have autoIncrement and an array key path.",
@@ -140,6 +156,13 @@ export class IDBDatabase extends EventTarget {
     }
 
     this._upgradeTransaction._ensureSavepoint();
+
+    // Mark any cached IDBObjectStore as deleted before removing from backend
+    const cachedStore = this._upgradeTransaction._objectStoreCache.get(name);
+    if (cachedStore && cachedStore._deleted !== undefined) {
+      cachedStore._deleted = true;
+    }
+
     this._backend.deleteObjectStore(this._name, name);
 
     // Update store names on the transaction
@@ -200,9 +223,9 @@ export class IDBDatabase extends EventTarget {
     // The transaction starts active, becomes inactive after each event dispatch
     // If it becomes inactive with no pending requests, it auto-commits
     queueMicrotask(() => {
-      if (txn._state === 'active' && txn._requests.length === 0) {
+      if (txn._state === 'active' && txn._pendingRequestCount === 0) {
         txn._deactivate();
-        txn._requestFinished();
+        txn._maybeAutoCommit();
       }
     });
 
