@@ -212,7 +212,7 @@ Uses SQLite `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for abort semantics.
 ### Phase 11: Event Bubbling + Error Handling ✅
 **Target tests**: `event-dispatch-active-flag.any.js`, `fire-error-event-exception.any.js`, `fire-success-event-exception.any.js`, `fire-upgradeneeded-event-exception.any.js`, `error-attributes.any.js`, `request_bubble-and-capture.any.js`, `transaction_bubble-and-capture.any.js`, `idbrequest-onupgradeneeded.any.js`, `idbrequest_error.any.js`, `idbrequest_result.any.js`
 
-### Phase 12: Upgrade Transaction Lifecycle
+### Phase 12: Upgrade Transaction Lifecycle ✅
 **Target tests**: `upgrade-transaction-deactivation-timing.any.js`, `upgrade-transaction-lifecycle-backend-aborted.any.js`, `upgrade-transaction-lifecycle-committed.any.js`, `upgrade-transaction-lifecycle-user-aborted.any.js`, `abort-in-initial-upgradeneeded.any.js`, `close-in-upgradeneeded.any.js`
 
 ### Phase 13: Remaining Tests (auto-increment, interleaved cursors, binary keys, misc)

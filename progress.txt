@@ -578,4 +578,27 @@ Phase 11: Event Bubbling + Error Handling — COMPLETE
   - Overall WPT pass rate: 1184/1272 subtests (93.1%), up from 1017/1234 (82.4%)
   - npx tsc --noEmit passes clean
 
-Next: Phase 12 — Upgrade Transaction Lifecycle
+Phase 12: Upgrade Transaction Lifecycle — COMPLETE
+  - Fixed upgrade transaction abort timing in IDBTransaction.abort():
+    - _versionChangeTransactionFinished now called synchronously after abort event fires
+      (was in a separate queueTask, causing request.transaction to not be cleared before
+       setTimeout(0) callbacks from abort handlers)
+    - request.transaction is now properly null in setTimeout(0) after onabort
+  - Implemented close-in-upgradeneeded behavior in IDBFactory._runOpenSteps:
+    - When db.close() is called during onupgradeneeded, the upgrade transaction commits
+      normally (complete event fires), but the connection is not opened
+    - _onVersionChangeComplete callback checks db._closePending after successful commit
+    - If closePending, fires error event with AbortError on open request instead of success
+    - request.result is cleared to undefined, matching spec behavior
+  - WPT results (13/13 Phase 12 subtests passing):
+    - upgrade-transaction-deactivation-timing.any.js: 3/3 PASS (unchanged)
+    - upgrade-transaction-lifecycle-backend-aborted.any.js: 2/2 PASS (was 1/2)
+    - upgrade-transaction-lifecycle-committed.any.js: 2/2 PASS (unchanged)
+    - upgrade-transaction-lifecycle-user-aborted.any.js: 4/4 PASS (was 3/4)
+    - abort-in-initial-upgradeneeded.any.js: 1/1 PASS (unchanged)
+    - close-in-upgradeneeded.any.js: 1/1 PASS (was 0/1)
+  - No regressions in previously passing tests
+  - Overall WPT pass rate: 1188/1272 subtests (93.4%), up from 1184/1272 (93.1%)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 13 — Remaining Tests

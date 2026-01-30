@@ -159,12 +159,26 @@ export class IDBFactory {
             this._backend.setDatabaseVersion(name, requestedVersion);
             db._version = requestedVersion;
 
-            // Add to open connections
-            this._openConnections.get(name)!.add(db);
+            // Per spec: if close() was called during upgrade, the connection
+            // is "close pending". The upgrade commits (complete fires), but
+            // the open request should fail with AbortError since the
+            // connection was closed before opening completed.
+            if (db._closePending) {
+              request._result = undefined;
+              request._error = new DOMException(
+                'The connection was closed.',
+                'AbortError'
+              );
+              const errorEvent = new Event('error', { bubbles: true, cancelable: true });
+              request.dispatchEvent(errorEvent);
+            } else {
+              // Add to open connections
+              this._openConnections.get(name)!.add(db);
 
-            // Fire success
-            const successEvent = new Event('success', { bubbles: false, cancelable: false });
-            request.dispatchEvent(successEvent);
+              // Fire success
+              const successEvent = new Event('success', { bubbles: false, cancelable: false });
+              request.dispatchEvent(successEvent);
+            }
           }
         };
 

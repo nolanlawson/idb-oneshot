@@ -176,11 +176,10 @@ export class IDBTransaction extends EventTarget {
       }
 
       // Notify database about abort for versionchange transactions
-      // Fire in a separate task so the abort event fully propagates first
+      // Run synchronously after abort event so that request.transaction is
+      // cleared before any setTimeout(0) callbacks queued from abort handlers.
       if (this._mode === 'versionchange') {
-        queueTask(() => {
-          this._db._versionChangeTransactionFinished(true);
-        });
+        this._db._versionChangeTransactionFinished(true);
       }
     });
   }
