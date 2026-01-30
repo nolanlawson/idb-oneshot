@@ -407,6 +407,65 @@ export class SQLiteBackend {
     db.prepare('DELETE FROM indexes WHERE id = ?').run(idx.id);
   }
 
+  /** Get the first record via an index by exact key */
+  getRecordByIndexKey(dbName: string, indexId: number, indexKey: Buffer | Uint8Array): { primaryKey: Buffer; value: Buffer } | null {
+    const db = this.getDatabase(dbName);
+    const storeIdRow = db.prepare('SELECT object_store_id FROM indexes WHERE id = ?').get(indexId) as { object_store_id: number } | undefined;
+    if (!storeIdRow) return null;
+    const row = db.prepare(
+      'SELECT ie.primary_key, r.value FROM index_entries ie ' +
+      'JOIN records r ON r.object_store_id = ? AND r.key = ie.primary_key ' +
+      'WHERE ie.index_id = ? AND ie.key = ? ORDER BY ie.primary_key ASC LIMIT 1'
+    ).get(storeIdRow.object_store_id, indexId, Buffer.from(indexKey)) as { primary_key: Buffer; value: Buffer } | undefined;
+    return row ? { primaryKey: row.primary_key, value: row.value } : null;
+  }
+
+  /** Get the first record via an index within a key range */
+  getRecordByIndexRange(dbName: string, indexId: number, lower: Buffer | Uint8Array | null, upper: Buffer | Uint8Array | null, lowerOpen: boolean, upperOpen: boolean): { primaryKey: Buffer; value: Buffer; indexKey: Buffer } | null {
+    const db = this.getDatabase(dbName);
+    const storeIdRow = db.prepare('SELECT object_store_id FROM indexes WHERE id = ?').get(indexId) as { object_store_id: number } | undefined;
+    if (!storeIdRow) return null;
+    const conditions: string[] = ['ie.index_id = ?'];
+    const params: any[] = [storeIdRow.object_store_id, indexId];
+    if (lower !== null) {
+      conditions.push(lowerOpen ? 'ie.key > ?' : 'ie.key >= ?');
+      params.push(Buffer.from(lower));
+    }
+    if (upper !== null) {
+      conditions.push(upperOpen ? 'ie.key < ?' : 'ie.key <= ?');
+      params.push(Buffer.from(upper));
+    }
+    const sql = 'SELECT ie.key as idx_key, ie.primary_key, r.value FROM index_entries ie ' +
+      'JOIN records r ON r.object_store_id = ? AND r.key = ie.primary_key ' +
+      'WHERE ' + conditions.join(' AND ') + ' ORDER BY ie.key ASC, ie.primary_key ASC LIMIT 1';
+    const row = db.prepare(sql).get(...params) as { idx_key: Buffer; primary_key: Buffer; value: Buffer } | undefined;
+    return row ? { primaryKey: row.primary_key, value: row.value, indexKey: row.idx_key } : null;
+  }
+
+  /** Count index entries, optionally within a range */
+  countIndexEntries(dbName: string, indexId: number, lower?: Buffer | Uint8Array | null, upper?: Buffer | Uint8Array | null, lowerOpen?: boolean, upperOpen?: boolean): number {
+    const db = this.getDatabase(dbName);
+    if (lower === undefined && upper === undefined) {
+      const row = db.prepare(
+        'SELECT COUNT(*) as cnt FROM index_entries WHERE index_id = ?'
+      ).get(indexId) as { cnt: number };
+      return row.cnt;
+    }
+    const conditions: string[] = ['index_id = ?'];
+    const params: any[] = [indexId];
+    if (lower !== null && lower !== undefined) {
+      conditions.push(lowerOpen ? 'key > ?' : 'key >= ?');
+      params.push(Buffer.from(lower));
+    }
+    if (upper !== null && upper !== undefined) {
+      conditions.push(upperOpen ? 'key < ?' : 'key <= ?');
+      params.push(Buffer.from(upper));
+    }
+    const sql = 'SELECT COUNT(*) as cnt FROM index_entries WHERE ' + conditions.join(' AND ');
+    const row = db.prepare(sql).get(...params) as { cnt: number };
+    return row.cnt;
+  }
+
   /** Add an index entry */
   addIndexEntry(dbName: string, indexId: number, key: Buffer | Uint8Array, primaryKey: Buffer | Uint8Array): void {
     const db = this.getDatabase(dbName);

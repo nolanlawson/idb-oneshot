@@ -1,6 +1,7 @@
 // IDBObjectStore implementation
 
 import { DOMStringList } from './DOMStringList.ts';
+import { IDBIndex } from './IDBIndex.ts';
 import { IDBKeyRange } from './IDBKeyRange.ts';
 import { IDBRequest } from './IDBRequest.ts';
 import { encodeKey, valueToKey, valueToKeyOrThrow } from './keys.ts';
@@ -50,6 +51,7 @@ export class IDBObjectStore {
   _autoIncrement: boolean;
   _storeId: number;
   _indexNamesCache: DOMStringList | null = null;
+  _indexCache: Map<string, IDBIndex> = new Map();
   _deleted: boolean = false;
 
   constructor(transaction: any, name: string) {
@@ -235,25 +237,41 @@ export class IDBObjectStore {
 
     // Add index entries
     for (const idx of indexes) {
-      const indexKeyValue = this._extractKeyFromValue(value, idx.keyPath);
-      if (indexKeyValue === null) continue;
-      if (idx.multiEntry && Array.isArray(indexKeyValue)) {
-        const seen = new Set<string>();
-        for (const item of indexKeyValue) {
-          const k = valueToKey(item);
+      if (idx.multiEntry && typeof idx.keyPath === 'string') {
+        // For multi-entry indexes, extract raw value to handle arrays with non-key elements
+        const rawValue = this._evaluateKeyPathRaw(value, idx.keyPath);
+        if (rawValue === undefined || rawValue === null) continue;
+        if (Array.isArray(rawValue)) {
+          const seen = new Set<string>();
+          for (const item of rawValue) {
+            const k = valueToKey(item);
+            if (k === null) continue;
+            const encoded = encodeKey(k);
+            const encodedStr = Buffer.from(encoded).toString('hex');
+            if (seen.has(encodedStr)) continue;
+            seen.add(encodedStr);
+            this._transaction._db._backend.addIndexEntry(
+              this._transaction._db._name,
+              idx.id,
+              encoded,
+              encodedKey
+            );
+          }
+        } else {
+          // Single value, treat as regular index entry
+          const k = valueToKey(rawValue);
           if (k === null) continue;
-          const encoded = encodeKey(k);
-          const encodedStr = Buffer.from(encoded).toString('hex');
-          if (seen.has(encodedStr)) continue;
-          seen.add(encodedStr);
+          const encodedIndexKey = encodeKey(k);
           this._transaction._db._backend.addIndexEntry(
             this._transaction._db._name,
             idx.id,
-            encoded,
+            encodedIndexKey,
             encodedKey
           );
         }
       } else {
+        const indexKeyValue = this._extractKeyFromValue(value, idx.keyPath);
+        if (indexKeyValue === null) continue;
         const encodedIndexKey = encodeKey(indexKeyValue);
         this._transaction._db._backend.addIndexEntry(
           this._transaction._db._name,
@@ -496,6 +514,18 @@ export class IDBObjectStore {
     }
     this._ensureValid();
 
+    // Check for duplicate index name (before keyPath validation per spec exception ordering)
+    const existingNames = this._transaction._db._backend.getIndexNames(
+      this._transaction._db._name,
+      this._storeId
+    );
+    if (existingNames.includes(name)) {
+      throw new DOMException(
+        `An index with name '${name}' already exists`,
+        'ConstraintError'
+      );
+    }
+
     if (!isValidKeyPath(keyPath)) {
       throw new DOMException(
         `The keyPath argument contains an invalid key path.`,
@@ -513,18 +543,6 @@ export class IDBObjectStore {
     const unique = options?.unique ?? false;
     const multiEntry = options?.multiEntry ?? false;
 
-    // Check for duplicate index name
-    const existingNames = this._transaction._db._backend.getIndexNames(
-      this._transaction._db._name,
-      this._storeId
-    );
-    if (existingNames.includes(name)) {
-      throw new DOMException(
-        `An index with name '${name}' already exists`,
-        'ConstraintError'
-      );
-    }
-
     this._transaction._ensureSavepoint();
     const indexId = this._transaction._db._backend.createIndex(
       this._transaction._db._name,
@@ -536,22 +554,30 @@ export class IDBObjectStore {
     );
 
     // Populate index with existing records.
-    // If unique constraint is violated, abort the transaction.
+    // If unique constraint is violated, abort the transaction asynchronously.
+    let constraintViolated = false;
     try {
       this._populateIndex(indexId, keyPath, unique, multiEntry);
     } catch (e: any) {
       if (e instanceof DOMException && e.name === 'ConstraintError') {
-        this._transaction.abort();
+        constraintViolated = true;
+      } else {
         throw e;
       }
-      throw e;
     }
 
     // Invalidate index names cache
     this._indexNamesCache = null;
 
-    // Return a stub IDBIndex for now
-    return { name, keyPath, unique, multiEntry, objectStore: this };
+    const idx = new IDBIndex(this, name, indexId, keyPath, unique, multiEntry);
+    idx._createdInTransaction = this._transaction;
+    this._indexCache.set(name, idx);
+
+    if (constraintViolated) {
+      this._transaction.abort();
+    }
+
+    return idx;
   }
 
   deleteIndex(name: string): void {
@@ -570,6 +596,13 @@ export class IDBObjectStore {
       name
     );
 
+    // Mark cached IDBIndex as deleted
+    const cached = this._indexCache.get(name);
+    if (cached) {
+      cached._deleted = true;
+      this._indexCache.delete(name);
+    }
+
     // Invalidate index names cache
     this._indexNamesCache = null;
   }
@@ -583,33 +616,29 @@ export class IDBObjectStore {
     throw new DOMException('Not yet implemented', 'InvalidStateError');
   }
 
-  index(_name: string): any {
+  index(name: string): IDBIndex {
     this._ensureValid();
+
+    // SameObject: return cached instance if available
+    const cached = this._indexCache.get(name);
+    if (cached && !cached._deleted) {
+      return cached;
+    }
+
     const meta = this._transaction._db._backend.getIndexMetadata(
       this._transaction._db._name,
       this._storeId,
-      _name
+      name
     );
     if (!meta) {
       throw new DOMException(
-        `No index named '${_name}' in this object store`,
+        `No index named '${name}' in this object store`,
         'NotFoundError'
       );
     }
-    return {
-      name: _name,
-      keyPath: meta.keyPath,
-      unique: meta.unique,
-      multiEntry: meta.multiEntry,
-      objectStore: this,
-      openCursor: () => { throw new DOMException('Not yet implemented', 'InvalidStateError'); },
-      openKeyCursor: () => { throw new DOMException('Not yet implemented', 'InvalidStateError'); },
-      get: () => { throw new DOMException('Not yet implemented', 'InvalidStateError'); },
-      getKey: () => { throw new DOMException('Not yet implemented', 'InvalidStateError'); },
-      getAll: () => { throw new DOMException('Not yet implemented', 'InvalidStateError'); },
-      getAllKeys: () => { throw new DOMException('Not yet implemented', 'InvalidStateError'); },
-      count: () => { throw new DOMException('Not yet implemented', 'InvalidStateError'); },
-    };
+    const idx = new IDBIndex(this, name, meta.id, meta.keyPath, meta.unique, meta.multiEntry);
+    this._indexCache.set(name, idx);
+    return idx;
   }
 
   getAll(_query?: any, _count?: number): IDBRequest {
@@ -692,6 +721,22 @@ export class IDBObjectStore {
     return valueToKey(current);
   }
 
+  /** Extract the raw value at a key path without validating as a key.
+   *  Used for multi-entry index extraction where the value may be an array
+   *  containing non-key elements. */
+  private _evaluateKeyPathRaw(value: any, keyPath: string): any {
+    if (keyPath === '') return value;
+    const parts = keyPath.split('.');
+    let current = value;
+    for (const part of parts) {
+      if (current === null || current === undefined || typeof current !== 'object') {
+        return undefined;
+      }
+      current = current[part];
+    }
+    return current;
+  }
+
   private _injectKeyIntoValue(value: any, keyPath: string | string[], key: IDBValidKey): any {
     if (typeof keyPath === 'string') {
       const clone = typeof value === 'object' && value !== null ? { ...value } : value;
@@ -717,26 +762,53 @@ export class IDBObjectStore {
 
     for (const row of rows) {
       const value = JSON.parse(row.value.toString());
+
+      if (multiEntry && typeof keyPath === 'string') {
+        const rawValue = this._evaluateKeyPathRaw(value, keyPath);
+        if (rawValue === undefined || rawValue === null) continue;
+        if (Array.isArray(rawValue)) {
+          const seen = new Set<string>();
+          for (const item of rawValue) {
+            const k = valueToKey(item);
+            if (k === null) continue;
+            const encoded = encodeKey(k);
+            const encodedStr = Buffer.from(encoded).toString('hex');
+            if (seen.has(encodedStr)) continue;
+            seen.add(encodedStr);
+            this._transaction._db._backend.addIndexEntry(
+              this._transaction._db._name,
+              indexId,
+              encoded,
+              row.key
+            );
+          }
+          continue;
+        }
+        // Single value
+        const k = valueToKey(rawValue);
+        if (k === null) continue;
+        if (unique) {
+          if (this._transaction._db._backend.checkUniqueIndexConstraint(
+            this._transaction._db._name,
+            indexId,
+            encodeKey(k)
+          )) {
+            throw new DOMException('Unique constraint violated when populating index', 'ConstraintError');
+          }
+        }
+        this._transaction._db._backend.addIndexEntry(
+          this._transaction._db._name,
+          indexId,
+          encodeKey(k),
+          row.key
+        );
+        continue;
+      }
+
       const indexKeyValue = this._extractKeyFromValue(value, keyPath);
       if (indexKeyValue === null) continue;
 
-      if (multiEntry && Array.isArray(indexKeyValue)) {
-        const seen = new Set<string>();
-        for (const item of indexKeyValue) {
-          const k = valueToKey(item);
-          if (k === null) continue;
-          const encoded = encodeKey(k);
-          const encodedStr = Buffer.from(encoded).toString('hex');
-          if (seen.has(encodedStr)) continue;
-          seen.add(encodedStr);
-          this._transaction._db._backend.addIndexEntry(
-            this._transaction._db._name,
-            indexId,
-            encoded,
-            row.key
-          );
-        }
-      } else {
+      {
         if (unique) {
           if (this._transaction._db._backend.checkUniqueIndexConstraint(
             this._transaction._db._name,

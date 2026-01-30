@@ -133,4 +133,42 @@ Phase 3: Object Store CRUD — COMPLETE
     - idbobjectstore_keyPath.any.js: 1/1 PASS
   - npx tsc --noEmit passes clean
 
-Next: Phase 4 — Indexes
+Phase 4: Indexes — COMPLETE
+  - Implemented full IDBIndex class (src/IDBIndex.ts):
+    - Properties: name, objectStore, keyPath, unique, multiEntry
+    - keyPath returns SameObject for array key paths
+    - get(query): retrieves first record matching index key or range
+    - getKey(query): retrieves first primary key matching index key or range
+    - count(query): counts index entries, supports exact key and range queries
+    - getAll/getAllKeys stubs (Phase 9)
+    - openCursor/openKeyCursor stubs returning null (Phase 5)
+    - _ensureValid() checks: deleted index, deleted-by-aborted-upgrade, deleted object store, inactive transaction
+    - _createdInTransaction tracking for proper abort detection
+  - Added SQLite backend index query methods (src/sqlite-backend.ts):
+    - getRecordByIndexKey(): lookup record by exact index key with JOIN to records table
+    - getRecordByIndexRange(): lookup first record in index key range
+    - countIndexEntries(): count index entries with optional range filtering
+  - Updated IDBObjectStore (src/IDBObjectStore.ts):
+    - index() now returns real IDBIndex instances with SameObject caching
+    - createIndex() returns real IDBIndex instances
+    - createIndex() exception ordering: ConstraintError (name check) before SyntaxError (keyPath check)
+    - createIndex() unique constraint violation: aborts transaction without throwing (returns IDBIndex)
+    - deleteIndex() marks cached IDBIndex._deleted = true
+    - Fixed multi-entry index entry generation: uses raw key path evaluation instead of valueToKey on arrays containing non-key elements
+    - Same fix applied to _populateIndex for consistency
+  - WPT results (33/34 Phase 4 subtests passing):
+    - idbindex_get.any.js: 8/8 PASS
+    - idbindex_getKey.any.js: 8/8 PASS
+    - idbindex_count.any.js: 4/4 PASS
+    - idbindex-multientry.any.js: 3/3 PASS
+    - idbindex-objectStore-SameObject.any.js: 1/1 PASS
+    - idbindex-request-source.any.js: 7/7 PASS
+    - idbobjectstore_index.any.js: 1/1 PASS
+    - idbindex_indexNames.any.js: 1/1 PASS
+    - idbindex_keyPath.any.js: 1/3 (2 fail: require openCursor — Phase 5)
+  - Bonus improvements from Phase 4 work:
+    - idbfactory-open-request-error.any.js: now 1/1 PASS (was 0/1, needed unique index)
+    - idbobjectstore_createIndex.any.js: 14/21 PASS (was 13/21, fixed ConstraintError ordering)
+  - npx tsc --noEmit passes clean
+
+Next: Phase 5 — Cursors
