@@ -356,11 +356,6 @@ export class IDBObjectStore {
           }
         }
 
-        // Update key generator if needed
-        if (autoIncrement && typeof effectiveKey === 'number') {
-          store._maybeUpdateKeyGenerator(effectiveKey);
-        }
-
         const encodedKey = encodeKey(effectiveKey);
 
         // Check for unique index constraints
@@ -428,6 +423,11 @@ export class IDBObjectStore {
 
         // Add index entries using cloned value
         store._addIndexEntries(indexes, clonedValue, encodedKey);
+
+        // Update key generator AFTER successful store (per spec)
+        if (autoIncrement && typeof effectiveKey === 'number') {
+          store._maybeUpdateKeyGenerator(effectiveKey);
+        }
 
         request._readyState = 'done';
         request._result = effectiveKey;
@@ -676,6 +676,9 @@ export class IDBObjectStore {
   }
 
   createIndex(name: string, keyPath: string | string[], options?: { unique?: boolean; multiEntry?: boolean }): any {
+    // Per WebIDL: name is a DOMString, coerce to string
+    name = String(name);
+
     if (this._transaction._mode !== 'versionchange') {
       throw new DOMException(
         "Failed to execute 'createIndex' on 'IDBObjectStore': The database is not running a version change transaction.",
@@ -823,7 +826,15 @@ export class IDBObjectStore {
   }
 
   index(name: string): IDBIndex {
-    this._ensureValid();
+    // Per spec: index() throws InvalidStateError if transaction is finished
+    // (different from other operations which throw TransactionInactiveError)
+    if (this._deleted) {
+      throw new DOMException('The object store has been deleted.', 'InvalidStateError');
+    }
+    const txn = this._transaction;
+    if (txn._state === 'finished' || txn._aborted) {
+      throw new DOMException('The transaction has finished.', 'InvalidStateError');
+    }
 
     // SameObject: return cached instance if available
     const cached = this._indexCache.get(name);
@@ -973,7 +984,8 @@ export class IDBObjectStore {
         'InvalidStateError'
       );
     }
-    if (this._transaction._state !== 'active') {
+    const txn = this._transaction;
+    if (txn._state !== 'active') {
       throw new DOMException(
         'The transaction is not active.',
         'TransactionInactiveError'
@@ -997,13 +1009,9 @@ export class IDBObjectStore {
     if (currentKey >= IDBObjectStore.MAX_KEY_GENERATOR_VALUE) {
       return null;
     }
-    const next = currentKey + 1;
-    this._transaction._db._backend.updateCurrentKey(
-      this._transaction._db._name,
-      this._storeId,
-      next
-    );
-    return next;
+    // Return the next key value but do NOT update currentKey yet.
+    // The key generator is only updated after the record is successfully stored.
+    return currentKey + 1;
   }
 
   private _maybeUpdateKeyGenerator(key: number): void {

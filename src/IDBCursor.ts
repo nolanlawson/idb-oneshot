@@ -32,6 +32,8 @@ export interface CursorState {
 }
 
 export class IDBCursor {
+  get [Symbol.toStringTag]() { return 'IDBCursor'; }
+
   _state: CursorState;
   _key: IDBValidKey | undefined;
   _primaryKey: IDBValidKey | undefined;
@@ -174,7 +176,11 @@ export class IDBCursor {
     this._iterateCursorAdvance(count);
   }
 
-  update(value: any): any {
+  update(...args: any[]): any {
+    if (args.length === 0) {
+      throw new TypeError("Failed to execute 'update' on 'IDBCursor': 1 argument required, but only 0 present.");
+    }
+    const value = args[0];
     const txn = this._state.transaction;
     if (txn._state !== 'active') {
       throw new DOMException(
@@ -617,6 +623,8 @@ export class IDBCursor {
 }
 
 export class IDBCursorWithValue extends IDBCursor {
+  get [Symbol.toStringTag]() { return 'IDBCursorWithValue'; }
+
   get value(): any {
     return this._value;
   }

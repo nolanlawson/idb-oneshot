@@ -239,7 +239,8 @@ export class IDBIndex {
         'InvalidStateError'
       );
     }
-    if (this._objectStore._transaction._state !== 'active') {
+    const txn = this._objectStore._transaction;
+    if (txn._state !== 'active') {
       throw new DOMException(
         'The transaction is not active.',
         'TransactionInactiveError'

@@ -41,6 +41,7 @@ export class IDBTransaction extends EventTarget {
   _pendingCallbacks: Array<() => void> = []; // Buffered request event callbacks
   _useScheduler: boolean = false; // Whether this transaction uses the scheduler
   _commitOnStart: boolean = false; // Auto-commit when scheduler starts (empty transactions)
+  _durability: string = 'default'; // Transaction durability hint
 
   // Event handlers
   onabort: ((this: IDBTransaction, ev: Event) => any) | null = null;
@@ -80,7 +81,7 @@ export class IDBTransaction extends EventTarget {
   }
 
   get durability(): string {
-    return 'default';
+    return this._durability;
   }
 
   get error(): DOMException | null {
@@ -88,7 +89,7 @@ export class IDBTransaction extends EventTarget {
   }
 
   objectStore(name: string): any {
-    if (this._state === 'finished') {
+    if (this._state === 'finished' || this._aborted) {
       throw new DOMException(
         "Failed to execute 'objectStore' on 'IDBTransaction': The transaction has finished.",
         'InvalidStateError'
@@ -110,13 +111,14 @@ export class IDBTransaction extends EventTarget {
     return store;
   }
 
-  abort(): void {
-    if (this._state === 'committing' || this._state === 'finished' || this._aborted) {
+  abort(_internal?: boolean): void {
+    if (!_internal && (this._state === 'committing' || this._state === 'finished' || this._aborted)) {
       throw new DOMException(
         "Failed to execute 'abort' on 'IDBTransaction': The transaction has already been committed or aborted.",
         'InvalidStateError'
       );
     }
+    if (this._aborted) return; // Already aborting (internal re-entry guard)
     this._aborted = true;
     // Don't set _state to 'finished' yet - it transitions through cleanup.
     // Set to 'inactive' so operations see it as "not active" but still "running".
@@ -300,14 +302,30 @@ export class IDBTransaction extends EventTarget {
   }
 
   commit(): void {
-    if (this._state === 'finished') {
+    if (this._state === 'finished' || this._aborted || this._state === 'committing') {
       throw new DOMException(
         "Failed to execute 'commit' on 'IDBTransaction': The transaction has already been committed or aborted.",
         'InvalidStateError'
       );
     }
+    if (this._state !== 'active') {
+      throw new DOMException(
+        "Failed to execute 'commit' on 'IDBTransaction': The transaction is not active.",
+        'InvalidStateError'
+      );
+    }
     this._state = 'committing';
-    this._commitWhenDone();
+    // Per spec, commit sets the transaction to committing state.
+    // The actual commit happens asynchronously after all pending requests complete.
+    // If no pending requests, schedule commit asynchronously so that
+    // code immediately after commit() sees 'committing' state, not 'finished'.
+    if (this._pendingRequestCount <= 0) {
+      queueTask(() => {
+        if (!this._aborted && this._state === 'committing') {
+          this._commitWhenDone();
+        }
+      });
+    }
   }
 
   /** Start the savepoint if not already started */
@@ -422,6 +440,11 @@ export class IDBTransaction extends EventTarget {
 
   /** Check if the transaction should auto-commit */
   _maybeAutoCommit(): void {
+    // Handle explicit commit(): when state is already 'committing' and no pending requests
+    if (this._state === 'committing' && !this._aborted && this._pendingRequestCount <= 0) {
+      this._commitWhenDone();
+      return;
+    }
     if (this._state === 'inactive' && !this._aborted && this._pendingRequestCount <= 0) {
       // If using scheduler and not yet started, defer commit until started
       if (this._useScheduler && !this._started) {
@@ -454,7 +477,11 @@ export class IDBTransaction extends EventTarget {
       return;
     }
 
-    this._state = 'active';
+    // Per spec: don't re-activate a transaction that has been explicitly committed
+    const wasCommitting = this._state === 'committing';
+    if (!wasCommitting) {
+      this._state = 'active';
+    }
 
     const notPrevented = request.dispatchEvent(event);
     const exceptionThrown = !!(event as any)._exceptionThrown;
@@ -464,7 +491,7 @@ export class IDBTransaction extends EventTarget {
       // (event handlers may have already changed state via abort()/commit())
       if (!this._aborted && (this._state as string) !== 'finished') {
         this._error = new DOMException('The transaction was aborted.', 'AbortError');
-        this.abort();
+        this.abort(true);
       }
       return;
     }
@@ -474,14 +501,16 @@ export class IDBTransaction extends EventTarget {
       // Set tx.error to the request's error (e.g., ConstraintError), not AbortError
       if (!this._aborted && (this._state as string) !== 'finished') {
         this._error = request._error;
-        this.abort();
+        this.abort(true);
         return;
       }
     }
 
     // Keep transaction active through microtask checkpoint, then deactivate
     queueMicrotask(() => queueMicrotask(() => {
-      this._deactivate();
+      if (!wasCommitting) {
+        this._deactivate();
+      }
       this._requestFinished();
     }));
   }

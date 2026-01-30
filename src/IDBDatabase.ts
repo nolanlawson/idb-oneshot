@@ -66,6 +66,9 @@ export class IDBDatabase extends EventTarget {
   }
 
   createObjectStore(name: string, options?: { keyPath?: string | string[] | null; autoIncrement?: boolean }): IDBObjectStore {
+    // Per WebIDL: name is a DOMString, so coerce to string
+    name = String(name);
+
     // Per spec exception ordering:
     // 1. InvalidStateError if not running an upgrade transaction
     //    A transaction that is 'finished' is no longer "running"
@@ -148,6 +151,9 @@ export class IDBDatabase extends EventTarget {
   }
 
   deleteObjectStore(name: string): void {
+    // Per WebIDL: name is a DOMString, so coerce to string
+    name = String(name);
+
     // Per spec: InvalidStateError if not running an upgrade transaction
     if (!this._upgradeTransaction || this._upgradeTransaction._state === 'finished') {
       throw new DOMException(
@@ -206,7 +212,7 @@ export class IDBDatabase extends EventTarget {
     this._upgradeTransaction._objectStoreCache.delete(name);
   }
 
-  transaction(storeNames: string | string[], mode?: IDBTransactionMode, _options?: any): IDBTransaction {
+  transaction(storeNames: string | string[], mode?: IDBTransactionMode, options?: { durability?: string }): IDBTransaction {
     if (this._closePending) {
       throw new DOMException(
         "Failed to execute 'transaction' on 'IDBDatabase': The database connection is closing.",
@@ -252,7 +258,14 @@ export class IDBDatabase extends EventTarget {
       throw new TypeError(`Invalid transaction mode: ${mode}`);
     }
 
+    // Validate durability option
+    const durability = options?.durability ?? 'default';
+    if (durability !== 'default' && durability !== 'strict' && durability !== 'relaxed') {
+      throw new TypeError(`Invalid durability: ${durability}`);
+    }
+
     const txn = new IDBTransaction(this, storeNames, mode);
+    txn._durability = durability;
     txn._useScheduler = true;
 
     // Register with the transaction scheduler

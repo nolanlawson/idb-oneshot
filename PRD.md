@@ -215,7 +215,7 @@ Uses SQLite `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for abort semantics.
 ### Phase 12: Upgrade Transaction Lifecycle ✅
 **Target tests**: `upgrade-transaction-deactivation-timing.any.js`, `upgrade-transaction-lifecycle-backend-aborted.any.js`, `upgrade-transaction-lifecycle-committed.any.js`, `upgrade-transaction-lifecycle-user-aborted.any.js`, `abort-in-initial-upgradeneeded.any.js`, `close-in-upgradeneeded.any.js`
 
-### Phase 13: Remaining Tests (auto-increment, interleaved cursors, binary keys, misc)
+### Phase 13: Remaining Tests (auto-increment, interleaved cursors, binary keys, misc) ✅
 **Target tests**: All remaining `.any.js` files not covered above (~30 files), including:
 - `reading-autoincrement-*.any.js` (4 files)
 - `interleaved-cursors-*.any.js` (2 files)
